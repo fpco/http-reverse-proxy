@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 import           Control.Concurrent        (forkIO, threadDelay)
-import           Data.Conduit.Network      (ServerSettings (ServerSettings))
+import           Data.Conduit.Network      (ServerSettings (ServerSettings), runTCPServer)
 import qualified Network.HTTP.Conduit      as HC
 import           Network.HTTP.ReverseProxy (ProxyDest (..), defaultOnExc,
                                             rawProxyTo, waiProxyTo)
@@ -17,7 +17,7 @@ main = hspec $ do
             manager <- HC.newManager HC.def
             forkIO $ run 5000 $ const $ return $ responseLBS status200 [] content
             forkIO $ run 5001 $ waiProxyTo (const $ return $ Right $ ProxyDest "localhost" 5000) defaultOnExc manager
-            forkIO $ rawProxyTo (const $ return $ Right $ ProxyDest "localhost" 5001) $ ServerSettings 5002 "*"
+            forkIO $ runTCPServer (ServerSettings 5002 "*") (rawProxyTo (const $ return $ Right $ ProxyDest "localhost" 5001))
             threadDelay 100000
             lbs <- HC.simpleHttp "http://localhost:5002"
             lbs `shouldBe` content

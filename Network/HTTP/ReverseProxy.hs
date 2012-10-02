@@ -20,7 +20,7 @@ import qualified Network.HTTP.Types as HT
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Lazy.Encoding as TLE
-import Data.Conduit.Network
+import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Control.Monad.Trans.Control (MonadBaseControl)
@@ -51,24 +51,20 @@ rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
            -- given content over the socket (useful for \"no such host\"
            -- messages), whereas a @Right@ will reverse proxy to the given
            -- host\/port.
-           -> ServerSettings -- ^ how we listen
-           -> m ()
-rawProxyTo getDest settings =
-    runTCPServer settings withClient
+           -> DCN.Application m
+rawProxyTo getDest fromClient toClient = do
+    (rsrc, headers) <- fromClient $$+ getHeaders
+    edest <- getDest headers
+    case edest of
+        Left src -> src $$ toClient
+        Right (ProxyDest host port) -> DCN.runTCPClient (DCN.ClientSettings port $ unpack $ TE.decodeUtf8 host) (withServer rsrc)
   where
-    withClient fromClient toClient = do
-        (rsrc, headers) <- fromClient $$+ getHeaders
-        edest <- getDest headers
-        case edest of
-            Left src -> src $$ toClient
-            Right (ProxyDest host port) -> runTCPClient (ClientSettings port $ unpack $ TE.decodeUtf8 host) (withServer rsrc)
-      where
-        withServer rsrc fromServer toServer = do
-            x <- newEmptyMVar
-            tid1 <- fork $ (rsrc $$+- toServer) `finally` putMVar x True
-            tid2 <- fork $ (fromServer $$ toClient) `finally` putMVar x False
-            y <- takeMVar x
-            killThread $ if y then tid2 else tid1
+    withServer rsrc fromServer toServer = do
+        x <- newEmptyMVar
+        tid1 <- fork $ (rsrc $$+- toServer) `finally` putMVar x True
+        tid2 <- fork $ (fromServer $$ toClient) `finally` putMVar x False
+        y <- takeMVar x
+        killThread $ if y then tid2 else tid1
 
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
