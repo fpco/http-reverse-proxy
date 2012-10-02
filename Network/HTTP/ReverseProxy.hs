@@ -14,7 +14,7 @@ import qualified Network.Wai as WAI
 import qualified Network.HTTP.Conduit as HC
 import Control.Exception.Lifted (try, finally)
 import Blaze.ByteString.Builder (fromByteString)
-import Data.Word8 (isSpace, _colon, toLower)
+import Data.Word8 (isSpace, _colon, toLower, _cr)
 import qualified Data.ByteString.Char8 as S8
 import qualified Network.HTTP.Types as HT
 import qualified Data.CaseInsensitive as CI
@@ -152,5 +152,5 @@ getHeaders =
     toHeader bs =
         (CI.mk key, val)
       where
-        (key, bs') = break (/= _colon) bs
-        val = dropWhile isSpace $ drop 1 bs'
+        (key, bs') = break (== _colon) bs
+        val = takeWhile (/= _cr) $ dropWhile isSpace $ drop 1 bs'
