@@ -3,7 +3,7 @@ import           Control.Concurrent        (forkIO, threadDelay)
 import           Data.Conduit.Network      (ServerSettings (ServerSettings), runTCPServer)
 import qualified Network.HTTP.Conduit      as HC
 import           Network.HTTP.ReverseProxy (ProxyDest (..), defaultOnExc,
-                                            rawProxyTo, waiProxyTo)
+                                            rawProxyTo, waiProxyTo, waiToRaw)
 import           Network.HTTP.Types        (status200)
 import           Network.Wai               (responseLBS)
 import           Network.Wai.Handler.Warp  (run)
@@ -20,4 +20,13 @@ main = hspec $ do
             forkIO $ runTCPServer (ServerSettings 5002 "*") (rawProxyTo (const $ return $ Right $ ProxyDest "localhost" 5001))
             threadDelay 100000
             lbs <- HC.simpleHttp "http://localhost:5002"
+            lbs `shouldBe` content
+        it "waiToRaw" $ do
+            let content = "waiToRaw"
+            manager <- HC.newManager HC.def
+            let waiApp = const $ return $ responseLBS status200 [] content
+                rawApp = waiToRaw waiApp
+            forkIO $ runTCPServer (ServerSettings 6000 "*") (rawProxyTo (const $ return $ Left rawApp))
+            threadDelay 100000
+            lbs <- HC.simpleHttp "http://localhost:6000"
             lbs `shouldBe` content

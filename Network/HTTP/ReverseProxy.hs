@@ -7,6 +7,8 @@ module Network.HTTP.ReverseProxy
       -- * WAI + http-conduit
     , waiProxyTo
     , defaultOnExc
+      -- * WAI to Raw
+    , waiToRaw
     ) where
 
 import ClassyPrelude.Conduit
@@ -24,6 +26,10 @@ import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Control.Monad.Trans.Control (MonadBaseControl)
+import Network.Wai.Handler.Warp (runSettingsConnection, defaultSettings, Connection (..))
+import Data.Conduit.Binary (sourceFileRange)
+import qualified Data.IORef as I
+import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -46,17 +52,20 @@ data ProxyDest = ProxyDest
 --
 -- If you need more control, such as modifying the request or response, use 'waiProxyTo'.
 rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
-           => (HT.RequestHeaders -> m (Either (Source m ByteString) ProxyDest))
-           -- ^ How to reverse proxy. A @Left@ result will simply return the
-           -- given content over the socket (useful for \"no such host\"
-           -- messages), whereas a @Right@ will reverse proxy to the given
-           -- host\/port.
+           => (HT.RequestHeaders -> m (Either (DCN.Application m) ProxyDest))
+           -- ^ How to reverse proxy. A @Left@ result will run the given
+           -- 'DCN.Application', whereas a @Right@ will reverse proxy to the
+           -- given host\/port.
            -> DCN.Application m
 rawProxyTo getDest fromClient toClient = do
     (rsrc, headers) <- fromClient $$+ getHeaders
     edest <- getDest headers
     case edest of
-        Left src -> src $$ toClient
+        Left app -> do
+            -- We know that the socket will be closed by the toClient side, so
+            -- we can throw away the finalizer here.
+            (fromClient', _) <- unwrapResumable rsrc
+            app fromClient' toClient
         Right (ProxyDest host port) -> DCN.runTCPClient (DCN.ClientSettings port $ unpack $ TE.decodeUtf8 host) (withServer rsrc)
   where
     withServer rsrc fromServer toServer = do
@@ -154,3 +163,26 @@ getHeaders =
       where
         (key, bs') = break (== _colon) bs
         val = takeWhile (/= _cr) $ dropWhile isSpace $ drop 1 bs'
+
+-- | Convert a WAI application into a raw application, using Warp.
+waiToRaw :: WAI.Application -> DCN.Application IO
+waiToRaw app fromClient toClient = do
+    (rsrc, ()) <- fromClient $$+ return ()
+    isrc <- I.newIORef rsrc
+    runSettingsConnection defaultSettings (return (conn isrc, dummyAddr)) app
+  where
+    dummyAddr = SockAddrInet (PortNum 0) 0 -- FIXME
+    conn isrc = Connection
+        { connSendMany = \bss -> mapM_ yield bss $$ toClient
+        , connSendAll = \bs -> yield bs $$ toClient
+        , connSendFile = \fp offset len th headers _cleaner ->
+            runResourceT $ sourceFileRange fp (Just offset) (Just len)
+                        $$ mapM (\bs -> lift th >> return bs)
+                        =$ transPipe lift toClient
+        , connClose = return ()
+        , connRecv = do
+            rsrc <- I.readIORef isrc
+            (rsrc', mbs) <- rsrc $$++ await
+            I.writeIORef isrc rsrc'
+            return $ fromMaybe empty mbs
+        }
