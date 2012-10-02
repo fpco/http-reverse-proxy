@@ -26,6 +26,9 @@ library
                      , http-conduit           >= 1.6
                      , wai                    >= 1.3
                      , classy-prelude-conduit >= 0.3
+                     , network
+                     , conduit                >= 0.5
+                     , warp                   >= 1.3
 
 test-suite test
     type: exitcode-stdio-1.0
