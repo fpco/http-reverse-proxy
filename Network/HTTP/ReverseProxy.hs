@@ -87,7 +87,7 @@ defaultOnExc exc _ = return $ WAI.responseLBS
 --
 -- Note: This function will use chunked request bodies for communicating with
 -- the proxied server. Not all servers necessarily support chunked request
--- bodies, so please confirm that yours does (Warp, for example, does).
+-- bodies, so please confirm that yours does (Warp, Snap, and Happstack, for example, do).
 waiProxyTo :: (WAI.Request -> ResourceT IO (Either WAI.Response ProxyDest))
            -- ^ How to reverse proxy. A @Left@ result will be sent verbatim as
            -- the response, whereas @Right@ will cause a reverse proxy.
