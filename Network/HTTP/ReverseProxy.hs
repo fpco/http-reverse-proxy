@@ -57,7 +57,7 @@ rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
            -- 'DCN.Application', whereas a @Right@ will reverse proxy to the
            -- given host\/port.
            -> DCN.Application m
-rawProxyTo getDest fromClient toClient = do
+rawProxyTo getDest appdata = do
     (rsrc, headers) <- fromClient $$+ getHeaders
     edest <- getDest headers
     case edest of
@@ -65,15 +65,20 @@ rawProxyTo getDest fromClient toClient = do
             -- We know that the socket will be closed by the toClient side, so
             -- we can throw away the finalizer here.
             (fromClient', _) <- unwrapResumable rsrc
-            app fromClient' toClient
-        Right (ProxyDest host port) -> DCN.runTCPClient (DCN.ClientSettings port $ unpack $ TE.decodeUtf8 host) (withServer rsrc)
+            app appdata { DCN.adSource = fromClient' }
+        Right (ProxyDest host port) -> DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
   where
-    withServer rsrc fromServer toServer = do
+    fromClient = DCN.adSource appdata
+    toClient = DCN.adSink appdata
+    withServer rsrc appdataServer = do
         x <- newEmptyMVar
         tid1 <- fork $ (rsrc $$+- toServer) `finally` putMVar x True
         tid2 <- fork $ (fromServer $$ toClient) `finally` putMVar x False
         y <- takeMVar x
         killThread $ if y then tid2 else tid1
+      where
+        fromServer = DCN.adSource appdataServer
+        toServer = DCN.adSink appdataServer
 
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
@@ -166,9 +171,11 @@ getHeaders =
 
 -- | Convert a WAI application into a raw application, using Warp.
 waiToRaw :: WAI.Application -> DCN.Application IO
-waiToRaw app fromClient0 toClient =
+waiToRaw app appdata0 =
     loop $ transPipe lift fromClient0
   where
+    fromClient0 = DCN.adSource appdata0
+    toClient = DCN.adSink appdata0
     loop fromClient = do
         (fromClient', keepAlive) <- runResourceT $ do
             (req, fromClient') <- parseRequest conn 0 dummyAddr fromClient
