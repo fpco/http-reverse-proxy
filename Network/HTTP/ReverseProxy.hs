@@ -26,7 +26,7 @@ import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Control.Monad.Trans.Control (MonadBaseControl)
-import Network.Wai.Handler.Warp (runSettingsConnection, defaultSettings, Connection (..))
+import Network.Wai.Handler.Warp (defaultSettings, Connection (..), parseRequest, sendResponse)
 import Data.Conduit.Binary (sourceFileRange)
 import qualified Data.IORef as I
 import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
@@ -166,13 +166,22 @@ getHeaders =
 
 -- | Convert a WAI application into a raw application, using Warp.
 waiToRaw :: WAI.Application -> DCN.Application IO
-waiToRaw app fromClient toClient = do
-    (rsrc, ()) <- fromClient $$+ return ()
-    isrc <- I.newIORef rsrc
-    runSettingsConnection defaultSettings (return (conn isrc, dummyAddr)) app
+waiToRaw app fromClient0 toClient =
+    loop $ transPipe lift fromClient0
   where
+    loop fromClient = do
+        (fromClient', keepAlive) <- runResourceT $ do
+            (req, fromClient') <- parseRequest conn 0 dummyAddr fromClient
+            res <- app req
+            keepAlive <- sendResponse (error "cleaner") req conn res
+            (fromClient'', _) <- liftIO fromClient' >>= unwrapResumable
+            return (fromClient'', keepAlive)
+        if keepAlive
+            then loop fromClient'
+            else return ()
+
     dummyAddr = SockAddrInet (PortNum 0) 0 -- FIXME
-    conn isrc = Connection
+    conn = Connection
         { connSendMany = \bss -> mapM_ yield bss $$ toClient
         , connSendAll = \bs -> yield bs $$ toClient
         , connSendFile = \fp offset len th headers _cleaner ->
@@ -180,9 +189,5 @@ waiToRaw app fromClient toClient = do
                         $$ mapM (\bs -> lift th >> return bs)
                         =$ transPipe lift toClient
         , connClose = return ()
-        , connRecv = do
-            rsrc <- I.readIORef isrc
-            (rsrc', mbs) <- rsrc $$++ await
-            I.writeIORef isrc rsrc'
-            return $ fromMaybe empty mbs
+        , connRecv = error "connRecv should not be used"
         }
