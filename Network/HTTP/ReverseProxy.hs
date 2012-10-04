@@ -65,11 +65,11 @@ rawProxyTo getDest appdata = do
             -- We know that the socket will be closed by the toClient side, so
             -- we can throw away the finalizer here.
             (fromClient', _) <- unwrapResumable rsrc
-            app appdata { DCN.adSource = fromClient' }
+            app appdata { DCN.appSource = fromClient' }
         Right (ProxyDest host port) -> DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
   where
-    fromClient = DCN.adSource appdata
-    toClient = DCN.adSink appdata
+    fromClient = DCN.appSource appdata
+    toClient = DCN.appSink appdata
     withServer rsrc appdataServer = do
         x <- newEmptyMVar
         tid1 <- fork $ (rsrc $$+- toServer) `finally` putMVar x True
@@ -77,8 +77,8 @@ rawProxyTo getDest appdata = do
         y <- takeMVar x
         killThread $ if y then tid2 else tid1
       where
-        fromServer = DCN.adSource appdataServer
-        toServer = DCN.adSink appdataServer
+        fromServer = DCN.appSource appdataServer
+        toServer = DCN.appSink appdataServer
 
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
@@ -174,8 +174,8 @@ waiToRaw :: WAI.Application -> DCN.Application IO
 waiToRaw app appdata0 =
     loop $ transPipe lift fromClient0
   where
-    fromClient0 = DCN.adSource appdata0
-    toClient = DCN.adSink appdata0
+    fromClient0 = DCN.appSource appdata0
+    toClient = DCN.appSink appdata0
     loop fromClient = do
         (fromClient', keepAlive) <- runResourceT $ do
             (req, fromClient') <- parseRequest conn 0 dummyAddr fromClient
