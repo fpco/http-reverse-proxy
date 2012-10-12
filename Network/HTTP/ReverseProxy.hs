@@ -26,7 +26,7 @@ import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Control.Monad.Trans.Control (MonadBaseControl)
-import Network.Wai.Handler.Warp (defaultSettings, Connection (..), parseRequest, sendResponse)
+import Network.Wai.Handler.Warp (defaultSettings, Connection (..), parseRequest, sendResponse, dummyCleaner)
 import Data.Conduit.Binary (sourceFileRange)
 import qualified Data.IORef as I
 import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
@@ -180,7 +180,7 @@ waiToRaw app appdata0 =
         (fromClient', keepAlive) <- runResourceT $ do
             (req, fromClient') <- parseRequest conn 0 dummyAddr fromClient
             res <- app req
-            keepAlive <- sendResponse (error "cleaner") req conn res
+            keepAlive <- sendResponse dummyCleaner req conn res
             (fromClient'', _) <- liftIO fromClient' >>= unwrapResumable
             return (fromClient'', keepAlive)
         if keepAlive
@@ -191,10 +191,12 @@ waiToRaw app appdata0 =
     conn = Connection
         { connSendMany = \bss -> mapM_ yield bss $$ toClient
         , connSendAll = \bs -> yield bs $$ toClient
-        , connSendFile = \fp offset len th headers _cleaner ->
-            runResourceT $ sourceFileRange fp (Just offset) (Just len)
-                        $$ mapM (\bs -> lift th >> return bs)
-                        =$ transPipe lift toClient
+        , connSendFile = \fp offset len _th headers _cleaner ->
+            let src1 = mapM_ yield headers
+                src2 = sourceFileRange fp (Just offset) (Just len)
+             in runResourceT
+                $  (src1 >> src2)
+                $$ transPipe lift toClient
         , connClose = return ()
         , connRecv = error "connRecv should not be used"
         }
