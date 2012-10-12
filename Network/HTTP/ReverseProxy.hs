@@ -137,7 +137,7 @@ waiProxyTo getDest onError manager req = do
                         (filter (\(key, _) -> not $ key `member` strippedHeaders) $ HC.responseHeaders res)
                         (mapOutput (Chunk . fromByteString) src)
   where
-    strippedHeaders = asSet $ fromList ["content-length", "transfer-encoding", "accept-encoding"]
+    strippedHeaders = asSet $ fromList ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
     asSet :: Set a -> Set a
     asSet = id
 
