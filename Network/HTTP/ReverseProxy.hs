@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, NoImplicitPrelude, FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings, NoImplicitPrelude, FlexibleContexts, ScopedTypeVariables #-}
 module Network.HTTP.ReverseProxy
     ( -- * Types
       ProxyDest (..)
@@ -177,15 +177,16 @@ waiToRaw app appdata0 =
     fromClient0 = DCN.appSource appdata0
     toClient = DCN.appSink appdata0
     loop fromClient = do
-        (fromClient', keepAlive) <- runResourceT $ do
-            (req, fromClient') <- parseRequest conn 0 dummyAddr fromClient
-            res <- app req
-            keepAlive <- sendResponse dummyCleaner req conn res
-            (fromClient'', _) <- liftIO fromClient' >>= unwrapResumable
-            return (fromClient'', keepAlive)
-        if keepAlive
-            then loop fromClient'
-            else return ()
+        mfromClient <- runResourceT $ do
+            ex <- try $ parseRequest conn 0 dummyAddr fromClient
+            case ex of
+                Left (_ :: SomeException) -> return Nothing
+                Right (req, fromClient') -> do
+                    res <- app req
+                    keepAlive <- sendResponse dummyCleaner req conn res
+                    (fromClient'', _) <- liftIO fromClient' >>= unwrapResumable
+                    return $ if keepAlive then Just fromClient'' else Nothing
+        maybe (return ()) loop mfromClient
 
     dummyAddr = SockAddrInet (PortNum 0) 0 -- FIXME
     conn = Connection
