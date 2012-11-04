@@ -158,7 +158,7 @@ getHeaders =
         push bs'
             | "\r\n\r\n" `S8.isInfixOf` bs
               || "\n\n" `S8.isInfixOf` bs
-              || length bs > 1000 = leftover bs >> return bs
+              || length bs > 4096 = leftover bs >> return bs
             | otherwise = go $ append bs
           where
             bs = front bs'
