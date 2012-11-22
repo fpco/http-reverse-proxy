@@ -21,21 +21,21 @@ main = hspec $ do
         it "works" $ do
             let content = "mainApp"
             manager <- HC.newManager HC.def
-            forkIO $ run 5000 $ const $ return $ responseLBS status200 [] content
-            forkIO $ run 5001 $ waiProxyTo (const $ return $ Right $ ProxyDest "localhost" 5000) defaultOnExc manager
-            forkIO $ runTCPServer (serverSettings 5002 "*") (rawProxyTo (const $ return $ Right $ ProxyDest "localhost" 5001))
+            forkIO $ run 15000 $ const $ return $ responseLBS status200 [] content
+            forkIO $ run 15001 $ waiProxyTo (const $ return $ Right $ ProxyDest "localhost" 15000) defaultOnExc manager
+            forkIO $ runTCPServer (serverSettings 15002 "*") (rawProxyTo (const $ return $ Right $ ProxyDest "localhost" 15001))
             threadDelay 100000
-            lbs <- HC.simpleHttp "http://localhost:5002"
+            lbs <- HC.simpleHttp "http://localhost:15002"
             lbs `shouldBe` content
         it "deals with streaming data" $ do
             manager <- HC.newManager HC.def
-            forkIO $ run 5003 $ const $ return $ ResponseSource status200 [] $ forever $ do
+            forkIO $ run 15003 $ const $ return $ ResponseSource status200 [] $ forever $ do
                 yield $ Chunk $ fromByteString "hello"
                 yield Flush
                 liftIO $ threadDelay 10000000
-            forkIO $ run 5004 $ waiProxyTo (const $ return $ Right $ ProxyDest "localhost" 5003) defaultOnExc manager
+            forkIO $ run 15004 $ waiProxyTo (const $ return $ Right $ ProxyDest "localhost" 15003) defaultOnExc manager
             threadDelay 100000
-            req <- HC.parseUrl "http://localhost:5004"
+            req <- HC.parseUrl "http://localhost:15004"
             mbs <- runResourceT $ timeout 1000000 $ do
                 res <- HC.http req manager
                 HC.responseBody res $$+- await
@@ -46,9 +46,9 @@ main = hspec $ do
             manager <- HC.newManager HC.def
             let waiApp = const $ return $ responseLBS status200 [] content
                 rawApp = waiToRaw waiApp
-            forkIO $ runTCPServer (serverSettings 6000 "*") (rawProxyTo (const $ return $ Left rawApp))
+            forkIO $ runTCPServer (serverSettings 16000 "*") (rawProxyTo (const $ return $ Left rawApp))
             threadDelay 100000
-            lbs <- HC.simpleHttp "http://localhost:6000"
+            lbs <- HC.simpleHttp "http://localhost:16000"
             lbs `shouldBe` content
         it "sends files" $ do
             let content = "PONG"
@@ -57,7 +57,7 @@ main = hspec $ do
             manager <- HC.newManager HC.def
             let waiApp = const $ return $ ResponseFile status200 [] fp Nothing
                 rawApp = waiToRaw waiApp
-            forkIO $ runTCPServer (serverSettings 6001 "*") (rawProxyTo (const $ return $ Left rawApp))
+            forkIO $ runTCPServer (serverSettings 16001 "*") (rawProxyTo (const $ return $ Left rawApp))
             threadDelay 100000
-            lbs <- HC.simpleHttp "http://localhost:6001"
+            lbs <- HC.simpleHttp "http://localhost:16001"
             lbs `shouldBe` L8.pack content
