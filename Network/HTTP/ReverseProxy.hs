@@ -7,6 +7,12 @@ module Network.HTTP.ReverseProxy
       -- * WAI + http-conduit
     , waiProxyTo
     , defaultOnExc
+    , waiProxyToSettings
+      -- ** Settings
+    , WaiProxySettings
+    , def
+    , wpsOnExc
+    , wpsTimeout
       -- * WAI to Raw
     , waiToRaw
     ) where
@@ -30,6 +36,7 @@ import Network.Wai.Handler.Warp (defaultSettings, Connection (..), parseRequest,
 import Data.Conduit.Binary (sourceFileRange)
 import qualified Data.IORef as I
 import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
+import Data.Default (Default (def))
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -110,7 +117,20 @@ waiProxyTo :: (WAI.Request -> ResourceT IO (Either WAI.Response ProxyDest))
            -- simple 502 error page, use 'defaultOnExc'.
            -> HC.Manager -- ^ connection manager to utilize
            -> WAI.Application
-waiProxyTo getDest onError manager req = do
+waiProxyTo getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError }
+
+data WaiProxySettings = WaiProxySettings
+    { wpsOnExc :: SomeException -> WAI.Application
+    , wpsTimeout :: Maybe Int
+    }
+
+instance Default WaiProxySettings where
+    def = WaiProxySettings
+        { wpsOnExc = defaultOnExc
+        , wpsTimeout = Nothing
+        }
+
+waiProxyToSettings getDest wps manager req = do
     edest <- getDest req
     case edest of
         Left response -> return response
@@ -125,11 +145,11 @@ waiProxyTo getDest onError manager req = do
                     , HC.requestBody = HC.RequestBodySourceChunked $ mapOutput fromByteString $ WAI.requestBody req
                     , HC.redirectCount = 0
                     , HC.checkStatus = \_ _ -> Nothing
-                    , HC.responseTimeout = Nothing
+                    , HC.responseTimeout = wpsTimeout wps
                     }
             ex <- try $ HC.http req' manager
             case ex of
-                Left e -> onError e req
+                Left e -> wpsOnExc wps e req
                 Right res -> do
                     (src, _) <- unwrapResumable $ HC.responseBody res
                     return $ WAI.ResponseSource
