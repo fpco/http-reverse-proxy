@@ -78,9 +78,9 @@ main = hspec $ do
             let content = "mainApp"
              in withMan $ \manager ->
                 withWApp (const $ return $ responseLBS status200 [] content) $ \port1 ->
-                withWApp (waiProxyTo (const $ return $ Right $ ProxyDest "localhost" port1) defaultOnExc manager) $ \port2 ->
-                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "localhost" port2)) $ \port3 -> do
-                    lbs <- HC.simpleHttp $ "http://localhost:" ++ show port3
+                withWApp (waiProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
+                    lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
                     lbs `shouldBe` content
         it "deals with streaming data" $
             let app _ = return $ ResponseSource status200 [] $ forever $ do
@@ -89,8 +89,8 @@ main = hspec $ do
                     liftIO $ threadDelay 10000000
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
-                withWApp (waiProxyTo (const $ return $ Right $ ProxyDest "localhost" port1) defaultOnExc manager) $ \port2 -> do
-                    req <- HC.parseUrl $ "http://localhost:" ++ show port2
+                withWApp (waiProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
+                    req <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
                     mbs <- runResourceT $ timeout 1000000 $ do
                         res <- HC.http req manager
                         HC.responseBody res $$+- await
@@ -101,7 +101,7 @@ main = hspec $ do
                 waiApp = const $ return $ responseLBS status200 [] content
                 rawApp = waiToRaw waiApp
             withCApp (rawProxyTo (const $ return $ Left rawApp)) $ \port -> do
-                lbs <- HC.simpleHttp $ "http://localhost:" ++ show port
+                lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port
                 lbs `shouldBe` content
         it "sends files" $ do
             let content = "PONG"
@@ -110,5 +110,5 @@ main = hspec $ do
                 rawApp = waiToRaw waiApp
             writeFile fp content
             withCApp (rawProxyTo (const $ return $ Left rawApp)) $ \port -> do
-                lbs <- HC.simpleHttp $ "http://localhost:" ++ show port
+                lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port
                 lbs `shouldBe` L8.pack content
