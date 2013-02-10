@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings, NoImplicitPrelude, FlexibleContexts, ScopedTypeVariables #-}
+{-# LANGUAGE CPP #-}
 module Network.HTTP.ReverseProxy
     ( -- * Types
       ProxyDest (..)
@@ -17,7 +18,9 @@ module Network.HTTP.ReverseProxy
     , waiToRaw
     ) where
 
-import ClassyPrelude.Conduit
+import ClassyPrelude
+import Data.Conduit
+import qualified Data.Conduit.List as CL
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Conduit as HC
 import Control.Exception.Lifted (try, finally)
@@ -142,7 +145,7 @@ waiProxyToSettings getDest wps manager req = do
                     , HC.path = WAI.rawPathInfo req
                     , HC.queryString = WAI.rawQueryString req
                     , HC.requestHeaders = filter (\(key, _) -> not $ key `member` strippedHeaders) $ WAI.requestHeaders req
-                    , HC.requestBody = HC.RequestBodySourceChunked $ mapOutput fromByteString $ WAI.requestBody req
+                    , HC.requestBody = HC.RequestBodySourceChunked $ WAI.requestBody req $= CL.map fromByteString
                     , HC.redirectCount = 0
                     , HC.checkStatus = \_ _ -> Nothing
                     , HC.responseTimeout = wpsTimeout wps
@@ -155,7 +158,7 @@ waiProxyToSettings getDest wps manager req = do
                     return $ WAI.ResponseSource
                         (HC.responseStatus res)
                         (filter (\(key, _) -> not $ key `member` strippedHeaders) $ HC.responseHeaders res)
-                        (src =$= awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
+                        (src $= awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
   where
     strippedHeaders = asSet $ fromList ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
     asSet :: Set a -> Set a
@@ -192,8 +195,15 @@ getHeaders =
 -- | Convert a WAI application into a raw application, using Warp.
 waiToRaw :: WAI.Application -> DCN.Application IO
 waiToRaw app appdata0 =
-    loop $ transPipe lift fromClient0
+    loop $ transPipe1 lift fromClient0
   where
+#if MIN_VERSION_conduit(1, 0, 0)
+    transPipe1 = hoist
+    transPipe2 = hoist
+#else
+    transPipe1 = transPipe
+    transPipe2 = transPipe
+#endif
     fromClient0 = DCN.appSource appdata0
     toClient = DCN.appSink appdata0
     loop fromClient = do
@@ -217,7 +227,7 @@ waiToRaw app appdata0 =
                 src2 = sourceFileRange fp (Just offset) (Just len)
              in runResourceT
                 $  (src1 >> src2)
-                $$ transPipe lift toClient
+                $$ transPipe2 lift toClient
         , connClose = return ()
         , connRecv = error "connRecv should not be used"
         }
