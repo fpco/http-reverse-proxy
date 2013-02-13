@@ -195,15 +195,8 @@ getHeaders =
 -- | Convert a WAI application into a raw application, using Warp.
 waiToRaw :: WAI.Application -> DCN.Application IO
 waiToRaw app appdata0 =
-    loop $ transPipe1 lift fromClient0
+    loop $ transPipe lift fromClient0
   where
-#if MIN_VERSION_conduit(1, 0, 0)
-    transPipe1 = hoist
-    transPipe2 = hoist
-#else
-    transPipe1 = transPipe
-    transPipe2 = transPipe
-#endif
     fromClient0 = DCN.appSource appdata0
     toClient = DCN.appSink appdata0
     loop fromClient = do
@@ -227,7 +220,7 @@ waiToRaw app appdata0 =
                 src2 = sourceFileRange fp (Just offset) (Just len)
              in runResourceT
                 $  (src1 >> src2)
-                $$ transPipe2 lift toClient
+                $$ transPipe lift toClient
         , connClose = return ()
         , connRecv = error "connRecv should not be used"
         }
