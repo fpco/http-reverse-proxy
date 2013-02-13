@@ -17,7 +17,8 @@ module Network.HTTP.ReverseProxy
     , waiToRaw
     ) where
 
-import ClassyPrelude.Conduit
+import ClassyPrelude
+import Data.Conduit
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Conduit as HC
 import Control.Exception.Lifted (try, finally)
