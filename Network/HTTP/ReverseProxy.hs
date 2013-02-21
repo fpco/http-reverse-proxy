@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings, NoImplicitPrelude, FlexibleContexts, ScopedTypeVariables #-}
+{-# LANGUAGE CPP #-}
 module Network.HTTP.ReverseProxy
     ( -- * Types
       ProxyDest (..)
@@ -145,7 +146,11 @@ waiProxyToSettings getDest wps manager req = do
                     , HC.requestHeaders = filter (\(key, _) -> not $ key `member` strippedHeaders) $ WAI.requestHeaders req
                     , HC.requestBody = HC.RequestBodySourceChunked $ mapOutput fromByteString $ WAI.requestBody req
                     , HC.redirectCount = 0
+#if MIN_VERSION_http_conduit(1, 9, 0)
+                    , HC.checkStatus = \_ _ _ -> Nothing
+#else
                     , HC.checkStatus = \_ _ -> Nothing
+#endif
                     , HC.responseTimeout = wpsTimeout wps
                     }
             ex <- try $ HC.http req' manager
