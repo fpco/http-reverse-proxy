@@ -34,11 +34,13 @@ import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Control.Monad.Trans.Control (MonadBaseControl)
-import Network.Wai.Handler.Warp (defaultSettings, Connection (..), parseRequest, sendResponse, dummyCleaner)
+import Network.Wai.Handler.Warp
 import Data.Conduit.Binary (sourceFileRange)
 import qualified Data.IORef as I
 import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
 import Data.Default (Default (def))
+import Data.Version (showVersion)
+import qualified Paths_http_reverse_proxy
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -209,7 +211,18 @@ waiToRaw app appdata0 =
                 Left (_ :: SomeException) -> return Nothing
                 Right (req, fromClient') -> do
                     res <- app req
-                    keepAlive <- sendResponse dummyCleaner req conn res
+                    keepAlive <- sendResponse
+#if MIN_VERSION_warp(1, 3, 8)
+                        defaultSettings
+                            { settingsServerName = S8.pack $ concat
+                                [ "Warp/"
+                                , warpVersion
+                                , " + http-reverse-proxy/"
+                                , showVersion Paths_http_reverse_proxy.version
+                                ]
+                            }
+#endif
+                        dummyCleaner req conn res
                     (fromClient'', _) <- liftIO fromClient' >>= unwrapResumable
                     return $ if keepAlive then Just fromClient'' else Nothing
         maybe (return ()) loop mfromClient
