@@ -146,7 +146,7 @@ waiProxyToSettings getDest wps manager req = do
                     , HC.path = WAI.rawPathInfo req
                     , HC.queryString = WAI.rawQueryString req
                     , HC.requestHeaders = filter (\(key, _) -> not $ key `member` strippedHeaders) $ WAI.requestHeaders req
-                    , HC.requestBody = HC.RequestBodySourceChunked $ mapOutput fromByteString $ WAI.requestBody req
+                    , HC.requestBody = body
                     , HC.redirectCount = 0
 #if MIN_VERSION_http_conduit(1, 9, 0)
                     , HC.checkStatus = \_ _ _ -> Nothing
@@ -155,6 +155,18 @@ waiProxyToSettings getDest wps manager req = do
 #endif
                     , HC.responseTimeout = wpsTimeout wps
                     }
+                bodySrc = mapOutput fromByteString $ WAI.requestBody req
+                bodyChunked = HC.RequestBodySourceChunked bodySrc
+#if MIN_VERSION_wai(1, 4, 0)
+                body =
+                    case WAI.requestBodyLength req of
+                        WAI.KnownLength i -> HC.RequestBodySource
+                            (fromIntegral i)
+                            bodySrc
+                        WAI.ChunkedBody -> bodyChunked
+#else
+                body = bodyChunked
+#endif
             ex <- try $ HC.http req' manager
             case ex of
                 Left e -> wpsOnExc wps e req

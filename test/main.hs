@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 import           Blaze.ByteString.Builder   (fromByteString)
@@ -7,6 +8,8 @@ import           Control.Exception          (IOException, bracket, onException,
                                              try)
 import           Control.Monad              (forever)
 import           Control.Monad.IO.Class     (liftIO)
+import qualified Data.ByteString            as S
+import qualified Data.ByteString.Char8      as S8
 import qualified Data.ByteString.Lazy.Char8 as L8
 import           Data.Conduit               (Flush (..), await, runResourceT,
                                              yield, ($$+-))
@@ -95,6 +98,30 @@ main = hspec $ do
                         res <- HC.http req manager
                         HC.responseBody res $$+- await
                     mbs `shouldBe` Just (Just "hello")
+#if MIN_VERSION_wai(1, 4, 0)
+        it "passes on body length" $
+            let app req = return $ responseLBS
+                    status200
+                    [("uplength", show' $ Network.Wai.requestBodyLength req)]
+                    ""
+                body = "some body"
+                show' Network.Wai.ChunkedBody = "chunked"
+                show' (Network.Wai.KnownLength i) = S8.pack $ show i
+             in withMan $ \manager ->
+                withWApp app $ \port1 ->
+                withWApp (waiProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
+                    req' <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
+                    let req = req'
+                            { HC.requestBody = HC.RequestBodyBS body
+                            }
+                    mlen <- runResourceT $ do
+                        res <- HC.http req manager
+                        return $ lookup "uplength" $ HC.responseHeaders res
+                    mlen `shouldBe` Just (show'
+                                            $ Network.Wai.KnownLength
+                                            $ fromIntegral
+                                            $ S.length body)
+#endif
     describe "waiToRaw" $ do
         it "works" $ do
             let content = "waiToRaw"
