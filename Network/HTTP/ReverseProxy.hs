@@ -174,8 +174,9 @@ waiProxyToSettings getDest wps manager req = do
                     (src, _) <- unwrapResumable $ HC.responseBody res
                     return $ WAI.ResponseSource
                         (HC.responseStatus res)
-                        (filter (\(key, _) -> not $ key `member` strippedHeaders) $ HC.responseHeaders res)
-                        (src =$= awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
+                        (filter (\(key, _) -> not $ key `member` strippedHeaders) $ HC.responseHeaders res) $ do
+                        yield Flush
+                        src =$= awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
   where
     strippedHeaders = asSet $ fromList ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
     asSet :: Set a -> Set a
