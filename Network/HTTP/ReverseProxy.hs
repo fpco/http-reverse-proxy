@@ -23,7 +23,7 @@ import Data.Conduit
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Conduit as HC
 import Control.Exception.Lifted (try, finally)
-import Blaze.ByteString.Builder (fromByteString)
+import Blaze.ByteString.Builder (fromByteString, flush)
 import Data.Word8 (isSpace, _colon, toLower, _cr)
 import qualified Data.ByteString.Char8 as S8
 import qualified Network.HTTP.Types as HT
@@ -155,7 +155,8 @@ waiProxyToSettings getDest wps manager req = do
 #endif
                     , HC.responseTimeout = wpsTimeout wps
                     }
-                bodySrc = mapOutput fromByteString $ WAI.requestBody req
+                fbs bs = fromByteString bs <> flush
+                bodySrc = mapOutput fbs $ WAI.requestBody req
                 bodyChunked = HC.RequestBodySourceChunked bodySrc
 #if MIN_VERSION_wai(1, 4, 0)
                 body =
