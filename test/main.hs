@@ -20,12 +20,14 @@ import           Data.Conduit.Network       (HostPreference (HostIPv4, HostAny),
 import qualified Data.Conduit.Network
 import qualified Data.IORef                 as I
 import qualified Network.HTTP.Conduit       as HC
-import           Network.HTTP.ReverseProxy  (ProxyDest (..), defaultOnExc,
-                                             rawProxyTo, waiProxyTo, waiToRaw)
+import           Network.HTTP.ReverseProxy  (ProxyDest (..),
+                                             WaiProxyResponse (..),
+                                             defaultOnExc, rawProxyTo,
+                                             waiProxyTo, waiToRaw)
 import           Network.HTTP.Types         (status200)
 import           Network.Socket             (sClose)
 import           Network.Wai                (Response (ResponseFile, ResponseSource),
-                                             responseLBS)
+                                             rawPathInfo, responseLBS)
 import qualified Network.Wai
 import           Network.Wai.Handler.Warp   (defaultSettings, run, runSettings,
                                              settingsBeforeMainLoop,
@@ -81,10 +83,22 @@ main = hspec $ do
             let content = "mainApp"
              in withMan $ \manager ->
                 withWApp (const $ return $ responseLBS status200 [] content) $ \port1 ->
-                withWApp (waiProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
+                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
                 withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
                     lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
                     lbs `shouldBe` content
+        it "modified path" $
+            let content = "/somepath"
+                app req = return $ responseLBS status200 [] $ L8.fromChunks [rawPathInfo req]
+                modReq pdest req = return $ WPRModifiedRequest
+                    (req { rawPathInfo = content })
+                    pdest
+             in withMan $ \manager ->
+                withWApp app $ \port1 ->
+                withWApp (waiProxyTo (modReq $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
+                    lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
+                    S8.concat (L8.toChunks lbs) `shouldBe` content
         it "deals with streaming data" $
             let app _ = return $ ResponseSource status200 [] $ forever $ do
                     yield $ Chunk $ fromByteString "hello"
@@ -92,7 +106,7 @@ main = hspec $ do
                     liftIO $ threadDelay 10000000
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
-                withWApp (waiProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
+                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
                     req <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
                     mbs <- runResourceT $ timeout 1000000 $ do
                         res <- HC.http req manager
@@ -109,7 +123,7 @@ main = hspec $ do
                 show' (Network.Wai.KnownLength i) = S8.pack $ show i
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
-                withWApp (waiProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
+                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
                     req' <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
                     let req = req'
                             { HC.requestBody = HC.RequestBodyBS body
