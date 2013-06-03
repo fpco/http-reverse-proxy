@@ -15,6 +15,8 @@ module Network.HTTP.ReverseProxy
     , def
     , wpsOnExc
     , wpsTimeout
+    , wpsSetIpHeader
+    , SetIpHeader (..)
       -- * WAI to Raw
     , waiToRaw
     ) where
@@ -42,6 +44,7 @@ import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
 import Data.Default (Default (def))
 import Data.Version (showVersion)
 import qualified Paths_http_reverse_proxy
+import Network.Wai.Logger.Utils (showSockAddr)
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -148,12 +151,26 @@ waiProxyTo getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError
 data WaiProxySettings = WaiProxySettings
     { wpsOnExc :: SomeException -> WAI.Application
     , wpsTimeout :: Maybe Int
+    , wpsSetIpHeader :: SetIpHeader
+    -- ^ Set the X-Real-IP request header with the client's IP address.
+    --
+    -- Default: SIHFromSocket
+    --
+    -- Since 0.2.0
     }
+
+-- | How to set the X-Real-IP request header.
+--
+-- Since 0.2.0
+data SetIpHeader = SIHNone -- ^ Do not set the header
+                 | SIHFromSocket -- ^ Set it from the socket's address.
+                 | SIHFromHeader -- ^ Set it from either X-Real-IP or X-Forwarded-For, if present
 
 instance Default WaiProxySettings where
     def = WaiProxySettings
         { wpsOnExc = defaultOnExc
         , wpsTimeout = Nothing
+        , wpsSetIpHeader = SIHFromSocket
         }
 
 waiProxyToSettings getDest wps manager req0 = do
@@ -172,7 +189,15 @@ waiProxyToSettings getDest wps manager req0 = do
                     , HC.port = port
                     , HC.path = WAI.rawPathInfo req
                     , HC.queryString = WAI.rawQueryString req
-                    , HC.requestHeaders = filter (\(key, _) -> not $ key `member` strippedHeaders) $ WAI.requestHeaders req
+                    , HC.requestHeaders = filter (\(key, _) -> not $ key `member` strippedHeaders) $
+                        (case wpsSetIpHeader wps of
+                            SIHFromSocket -> (("X-Real-IP", S8.pack $ showSockAddr $ WAI.remoteHost req):)
+                            SIHFromHeader ->
+                                case lookup "x-real-ip" (WAI.requestHeaders req) <|> lookup "X-Forwarded-For" (WAI.requestHeaders req) of
+                                    Nothing -> id
+                                    Just ip -> (("X-Real-IP", ip):)
+                            SIHNone -> id)
+                        $ WAI.requestHeaders req
                     , HC.requestBody = body
                     , HC.redirectCount = 0
 #if MIN_VERSION_http_conduit(1, 9, 0)
