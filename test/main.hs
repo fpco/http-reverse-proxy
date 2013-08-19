@@ -26,7 +26,7 @@ import           Network.HTTP.ReverseProxy  (ProxyDest (..),
                                              waiProxyTo, waiToRaw)
 import           Network.HTTP.Types         (status200)
 import           Network.Socket             (sClose)
-import           Network.Wai                (Response (ResponseFile, ResponseSource),
+import           Network.Wai                (Response, responseFile, responseSource,
                                              rawPathInfo, responseLBS)
 import qualified Network.Wai
 import           Network.Wai.Handler.Warp   (defaultSettings, run, runSettings,
@@ -100,7 +100,7 @@ main = hspec $ do
                     lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
                     S8.concat (L8.toChunks lbs) `shouldBe` content
         it "deals with streaming data" $
-            let app _ = return $ ResponseSource status200 [] $ forever $ do
+            let app _ = return $ responseSource status200 [] $ forever $ do
                     yield $ Chunk $ fromByteString "hello"
                     yield Flush
                     liftIO $ threadDelay 10000000
@@ -147,7 +147,7 @@ main = hspec $ do
         it "sends files" $ do
             let content = "PONG"
                 fp = "pong"
-                waiApp = const $ return $ ResponseFile status200 [] fp Nothing
+                waiApp = const $ return $ responseFile status200 [] fp Nothing
                 rawApp = waiToRaw waiApp
             writeFile fp content
             withCApp (rawProxyTo (const $ return $ Left rawApp)) $ \port -> do

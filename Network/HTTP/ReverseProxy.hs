@@ -37,7 +37,9 @@ import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Monad.Trans.Resource (withInternalState, runInternalState)
 import Network.Wai.Handler.Warp
+import Network.Wai.Handler.Warp.Timeout (dummyHandle)
 import Data.Conduit.Binary (sourceFileRange)
 import qualified Data.IORef as I
 import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
@@ -138,7 +140,7 @@ data WaiProxyResponse = WPRResponse WAI.Response
 -- Note: This function will use chunked request bodies for communicating with
 -- the proxied server. Not all servers necessarily support chunked request
 -- bodies, so please confirm that yours does (Warp, Snap, and Happstack, for example, do).
-waiProxyTo :: (WAI.Request -> ResourceT IO WaiProxyResponse)
+waiProxyTo :: (WAI.Request -> IO WaiProxyResponse)
            -- ^ How to reverse proxy. A @Left@ result will be sent verbatim as
            -- the response, whereas @Right@ will cause a reverse proxy.
            -> (SomeException -> WAI.Application)
@@ -200,36 +202,31 @@ waiProxyToSettings getDest wps manager req0 = do
                         $ WAI.requestHeaders req
                     , HC.requestBody = body
                     , HC.redirectCount = 0
-#if MIN_VERSION_http_conduit(1, 9, 0)
                     , HC.checkStatus = \_ _ _ -> Nothing
-#else
-                    , HC.checkStatus = \_ _ -> Nothing
-#endif
                     , HC.responseTimeout = wpsTimeout wps
                     }
                 fbs bs = fromByteString bs <> flush
-                bodySrc = mapOutput fbs $ WAI.requestBody req
+                bodySrc = transPipe lift $ mapOutput fbs $ WAI.requestBody req
                 bodyChunked = HC.RequestBodySourceChunked bodySrc
-#if MIN_VERSION_wai(1, 4, 0)
                 body =
                     case WAI.requestBodyLength req of
                         WAI.KnownLength i -> HC.RequestBodySource
                             (fromIntegral i)
                             bodySrc
                         WAI.ChunkedBody -> bodyChunked
-#else
-                body = bodyChunked
-#endif
-            ex <- try $ HC.http req' manager
+            ex <- try $ runInternalState (HC.http req' manager) (WAI.resourceInternalState req)
             case ex of
                 Left e -> wpsOnExc wps e req
                 Right res -> do
-                    (src, _) <- unwrapResumable $ HC.responseBody res
-                    return $ WAI.ResponseSource
+                    (src, _) <- runInternalState
+                        (unwrapResumable $ HC.responseBody res)
+                        (WAI.resourceInternalState req)
+                    return $ WAI.responseSource
                         (HC.responseStatus res)
                         (filter (\(key, _) -> not $ key `member` strippedHeaders) $ HC.responseHeaders res) $ do
                         yield Flush
-                        src =$= awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
+                        let src' = transPipe (flip runInternalState $ WAI.resourceInternalState req) src
+                        src' =$= awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
   where
     strippedHeaders = asSet $ fromList ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
     asSet :: Set a -> Set a
@@ -266,19 +263,18 @@ getHeaders =
 -- | Convert a WAI application into a raw application, using Warp.
 waiToRaw :: WAI.Application -> DCN.Application IO
 waiToRaw app appdata0 =
-    loop $ transPipe lift fromClient0
+    loop fromClient0
   where
     fromClient0 = DCN.appSource appdata0
     toClient = DCN.appSink appdata0
     loop fromClient = do
-        mfromClient <- runResourceT $ do
-            ex <- try $ parseRequest conn 0 dummyAddr fromClient
+        mfromClient <- runResourceT $ withInternalState $ \internalState -> do
+            ex <- try $ parseRequest conn dummyHandle internalState dummyAddr fromClient -- FIXME dummyHandle
             case ex of
                 Left (_ :: SomeException) -> return Nothing
                 Right (req, fromClient') -> do
                     res <- app req
                     keepAlive <- sendResponse
-#if MIN_VERSION_warp(1, 3, 8)
                         defaultSettings
                             { settingsServerName = S8.pack $ concat
                                 [ "Warp/"
@@ -287,7 +283,6 @@ waiToRaw app appdata0 =
                                 , showVersion Paths_http_reverse_proxy.version
                                 ]
                             }
-#endif
                         dummyCleaner req conn res
                     (fromClient'', _) <- liftIO fromClient' >>= unwrapResumable
                     return $ if keepAlive then Just fromClient'' else Nothing
