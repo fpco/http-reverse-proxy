@@ -16,6 +16,7 @@ module Network.HTTP.ReverseProxy
     , wpsOnExc
     , wpsTimeout
     , wpsSetIpHeader
+    , wpsProcessBody
     , SetIpHeader (..)
       -- * WAI to Raw
     , waiToRaw
@@ -45,6 +46,7 @@ import Data.Default (Default (def))
 import Data.Version (showVersion)
 import qualified Paths_http_reverse_proxy
 import Network.Wai.Logger.Utils (showSockAddr)
+import Blaze.ByteString.Builder (Builder)
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -157,6 +159,10 @@ data WaiProxySettings = WaiProxySettings
     -- Default: SIHFromSocket
     --
     -- Since 0.2.0
+    , wpsProcessBody :: HC.Response () -> Maybe (Conduit ByteString (ResourceT IO) (Flush Builder))
+    -- ^ Post-process the response body returned from the host.
+    --
+    -- Since 0.2.1
     }
 
 -- | How to set the X-Real-IP request header.
@@ -171,6 +177,7 @@ instance Default WaiProxySettings where
         { wpsOnExc = defaultOnExc
         , wpsTimeout = Nothing
         , wpsSetIpHeader = SIHFromSocket
+        , wpsProcessBody = const Nothing
         }
 
 waiProxyToSettings getDest wps manager req0 = do
@@ -225,11 +232,15 @@ waiProxyToSettings getDest wps manager req0 = do
                 Left e -> wpsOnExc wps e req
                 Right res -> do
                     (src, _) <- unwrapResumable $ HC.responseBody res
+                    let conduit =
+                            case wpsProcessBody wps $ fmap (const ()) res of
+                                Nothing -> awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
+                                Just conduit -> conduit
                     return $ WAI.ResponseSource
                         (HC.responseStatus res)
                         (filter (\(key, _) -> not $ key `member` strippedHeaders) $ HC.responseHeaders res) $ do
                         yield Flush
-                        src =$= awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
+                        src =$= conduit
   where
     strippedHeaders = asSet $ fromList ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
     asSet :: Set a -> Set a
