@@ -26,13 +26,14 @@ library
                      , blaze-builder          >= 0.3
                      , http-conduit           >= 1.9
                      , wai                    >= 2.0
-                     , classy-prelude         >= 0.3
+                     , basic-prelude          >= 0.3.5
                      , network
                      , conduit                >= 0.5
                      , warp                   >= 1.3.4
                      , data-default
                      , wai-logger
                      , resourcet
+                     , containers
 
 test-suite test
     type: exitcode-stdio-1.0
