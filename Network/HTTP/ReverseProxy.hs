@@ -55,6 +55,7 @@ import qualified Data.Set as Set
 data ProxyDest = ProxyDest
     { pdHost :: !ByteString
     , pdPort :: !Int
+    , pdEnableTls :: !Bool
     }
 
 -- | Set up a reverse proxy server, which will have a minimal overhead.
@@ -86,7 +87,7 @@ rawProxyTo getDest appdata = do
             -- we can throw away the finalizer here.
             (fromClient', _) <- unwrapResumable rsrc
             app appdata { DCN.appSource = fromClient' }
-        Right (ProxyDest host port) -> DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
+        Right (ProxyDest host port _) -> DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
   where
     fromClient = DCN.appSource appdata
     toClient = DCN.appSink appdata
@@ -192,7 +193,7 @@ waiProxyToSettings getDest wps manager req0 = do
                 WPRModifiedRequest req pd -> Right (pd, req)
     case edest of
         Left response -> return response
-        Right (ProxyDest host port, req) -> do
+        Right (ProxyDest host port tlsEnabled, req) -> do
             let req' = HC.def
                     { HC.method = WAI.requestMethod req
                     , HC.host = host
@@ -216,6 +217,7 @@ waiProxyToSettings getDest wps manager req0 = do
                     , HC.checkStatus = \_ _ -> Nothing
 #endif
                     , HC.responseTimeout = wpsTimeout wps
+                    , HC.secure = tlsEnabled
                     }
                 fbs bs = fromByteString bs <> flush
                 bodySrc = mapOutput fbs $ WAI.requestBody req

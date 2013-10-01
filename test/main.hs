@@ -83,8 +83,8 @@ main = hspec $ do
             let content = "mainApp"
              in withMan $ \manager ->
                 withWApp (const $ return $ responseLBS status200 [] content) $ \port1 ->
-                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
-                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
+                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1 False) defaultOnExc manager) $ \port2 ->
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2 False)) $ \port3 -> do
                     lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
                     lbs `shouldBe` content
         it "modified path" $
@@ -95,8 +95,8 @@ main = hspec $ do
                     pdest
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
-                withWApp (waiProxyTo (modReq $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
-                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
+                withWApp (waiProxyTo (modReq $ ProxyDest "127.0.0.1" port1 False) defaultOnExc manager) $ \port2 ->
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2 False)) $ \port3 -> do
                     lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
                     S8.concat (L8.toChunks lbs) `shouldBe` content
         it "deals with streaming data" $
@@ -106,7 +106,7 @@ main = hspec $ do
                     liftIO $ threadDelay 10000000
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
-                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
+                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1 False) defaultOnExc manager) $ \port2 -> do
                     req <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
                     mbs <- runResourceT $ timeout 1000000 $ do
                         res <- HC.http req manager
@@ -123,7 +123,7 @@ main = hspec $ do
                 show' (Network.Wai.KnownLength i) = S8.pack $ show i
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
-                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
+                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1 False) defaultOnExc manager) $ \port2 -> do
                     req' <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
                     let req = req'
                             { HC.requestBody = HC.RequestBodyBS body
