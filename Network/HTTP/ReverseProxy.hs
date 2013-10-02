@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings, NoImplicitPrelude, FlexibleContexts, ScopedTypeVariables #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE CPP #-}
 module Network.HTTP.ReverseProxy
     ( -- * Types
@@ -50,6 +51,10 @@ import qualified Paths_http_reverse_proxy
 import Network.Wai.Logger.Utils (showSockAddr)
 import Blaze.ByteString.Builder (Builder)
 import qualified Data.Set as Set
+import Network.Connection as NC
+import qualified Data.Conduit.Network.Internal as DCNI
+import Control.Monad.Trans.Control (control)
+import qualified Network.Socket as NS
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -57,6 +62,45 @@ data ProxyDest = ProxyDest
     , pdPort :: !Int
     , pdEnableTls :: !Bool
     }
+
+sourceConnection :: MonadIO m => NC.Connection -> Producer m ByteString
+sourceConnection connection =
+    loop
+  where
+    loop = do
+        bs <- lift $ liftIO $ connectionGet connection 4096
+        if S.null bs
+            then return ()
+            else yield bs >> loop
+
+sinkConnection :: MonadIO m => NC.Connection -> Consumer ByteString m ()
+sinkConnection connection =
+    loop
+  where
+    loop = await >>= maybe (return ()) (\bs -> lift (liftIO $ connectionPut connection bs) >> loop)
+
+runConnectionClient :: (MonadIO m, MonadBaseControl IO m) => DCN.ClientSettings m -> DCN.Application m -> m ()
+runConnectionClient (DCNI.ClientSettings port host) app =
+    control $ \run -> bracket
+        (do
+            context <- NC.initConnectionContext
+            let params = ConnectionParams {
+                connectionHostname = (S8.unpack host),
+                connectionPort = (fromIntegral port),
+                connectionUseSecure = Nothing,
+                connectionUseSocks = Nothing }
+            NC.connectTo context params)
+        (\connection -> do
+            NC.connectionClose connection
+            )
+        (\connection -> do
+            addrs <- NS.getAddrInfo Nothing (Just (S8.unpack host)) Nothing
+            run $ app DCNI.AppData
+                { DCNI.appSource = sourceConnection connection
+                , DCNI.appSink = sinkConnection connection
+                , DCNI.appSockAddr = NS.SockAddrUnix "dummy"
+                , DCNI.appLocalAddr = Nothing
+                })
 
 -- | Set up a reverse proxy server, which will have a minimal overhead.
 --
@@ -87,7 +131,8 @@ rawProxyTo getDest appdata = do
             -- we can throw away the finalizer here.
             (fromClient', _) <- unwrapResumable rsrc
             app appdata { DCN.appSource = fromClient' }
-        Right (ProxyDest host port _) -> DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
+        Right (ProxyDest host port _) ->
+            runConnectionClient (DCN.clientSettings port host) (withServer rsrc)
   where
     fromClient = DCN.appSource appdata
     toClient = DCN.appSink appdata
