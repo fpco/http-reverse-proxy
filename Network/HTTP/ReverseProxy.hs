@@ -42,7 +42,6 @@ import Control.Concurrent.Lifted (fork, killThread)
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Monad.Trans.Resource (withInternalState, runInternalState)
 import Network.Wai.Handler.Warp
-import Network.Wai.Handler.Warp.Timeout (dummyHandle)
 import Data.Conduit.Binary (sourceFileRange)
 import qualified Data.IORef as I
 import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
@@ -280,7 +279,7 @@ waiToRaw app appdata0 =
     toClient = DCN.appSink appdata0
     loop fromClient = do
         mfromClient <- runResourceT $ withInternalState $ \internalState -> do
-            ex <- try $ parseRequest conn dummyHandle internalState dummyAddr fromClient -- FIXME dummyHandle
+            ex <- try $ parseRequest conn internalState dummyAddr fromClient
             case ex of
                 Left (_ :: SomeException) -> return Nothing
                 Right (req, fromClient') -> do
