@@ -24,12 +24,11 @@ library
                      , http-types             >= 0.6
                      , word8                  >= 0.0
                      , blaze-builder          >= 0.3
-                     , http-conduit           >= 1.9
+                     , http-client            >= 0.1
                      , wai                    >= 2.0
                      , basic-prelude          >= 0.3.5
                      , network
                      , conduit                >= 0.5
-                     , warp                   >= 1.3.4
                      , data-default
                      , wai-logger
                      , resourcet
@@ -41,7 +40,6 @@ test-suite test
     hs-source-dirs: test
     build-depends: base
                  , http-reverse-proxy
-                 , http-conduit
                  , network-conduit
                  , wai
                  , http-types
@@ -53,6 +51,7 @@ test-suite test
                  , transformers
                  , lifted-base
                  , network
+                 , http-conduit
 
 source-repository head
   type:     git

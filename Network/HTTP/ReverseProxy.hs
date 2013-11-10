@@ -18,39 +18,37 @@ module Network.HTTP.ReverseProxy
     , wpsSetIpHeader
     , wpsProcessBody
     , SetIpHeader (..)
+    {- FIXME
       -- * WAI to Raw
     , waiToRaw
+    -}
     ) where
 
 import BasicPrelude
 import Data.Conduit
+import Data.Default (def)
 import qualified Network.Wai as WAI
-import qualified Network.HTTP.Conduit as HC
-import Control.Exception.Lifted (try, finally)
-import Blaze.ByteString.Builder (fromByteString, flush)
-import Data.Word8 (isSpace, _colon, toLower, _cr)
+import qualified Network.HTTP.Client as HC
+import Network.HTTP.Client.Body (BodyReader, brRead)
+import qualified Network.HTTP.Client.Types as HC
+import qualified Network.HTTP.Client.Manager as HC
+import Control.Exception (bracketOnError)
+import Blaze.ByteString.Builder (fromByteString)
+import Data.Word8 (isSpace, _colon, _cr)
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Char8 as S8
 import qualified Network.HTTP.Types as HT
 import qualified Data.CaseInsensitive as CI
-import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Lazy.Encoding as TLE
 import qualified Data.Text.Lazy as TL
 import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
-import Control.Monad.Trans.Control (MonadBaseControl)
-import Control.Monad.Trans.Resource (withInternalState, runInternalState)
-import Network.Wai.Handler.Warp
-import Data.Conduit.Binary (sourceFileRange)
-import qualified Data.IORef as I
-import Network.Socket (PortNumber (PortNum), SockAddr (SockAddrInet))
-import Data.Default (Default (def))
-import Data.Version (showVersion)
-import qualified Paths_http_reverse_proxy
+import Data.Default (Default (..))
 import Network.Wai.Logger.Utils (showSockAddr)
 import Blaze.ByteString.Builder (Builder)
 import qualified Data.Set as Set
+import Data.IORef
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -184,6 +182,10 @@ instance Default WaiProxySettings where
         , wpsProcessBody = const Nothing
         }
 
+waiProxyToSettings :: (WAI.Request -> IO WaiProxyResponse)
+                   -> WaiProxySettings
+                   -> HC.Manager
+                   -> WAI.Application
 waiProxyToSettings getDest wps manager req0 = do
     edest' <- getDest req0
     let edest =
@@ -194,7 +196,7 @@ waiProxyToSettings getDest wps manager req0 = do
     case edest of
         Left response -> return response
         Right (ProxyDest host port, req) -> do
-            let req' = HC.def
+            let req' = def
                     { HC.method = WAI.requestMethod req
                     , HC.host = host
                     , HC.port = port
@@ -214,31 +216,34 @@ waiProxyToSettings getDest wps manager req0 = do
                     , HC.checkStatus = \_ _ _ -> Nothing
                     , HC.responseTimeout = wpsTimeout wps
                     }
-                fbs bs = fromByteString bs <> flush
-                bodySrc = transPipe lift $ mapOutput fbs $ WAI.requestBody req
-                bodyChunked = HC.RequestBodySourceChunked bodySrc
+                bodyChunked = requestBodySourceChunked $ WAI.requestBody req
                 body =
                     case WAI.requestBodyLength req of
-                        WAI.KnownLength i -> HC.RequestBodySource
+                        WAI.KnownLength i -> requestBodySource
                             (fromIntegral i)
-                            bodySrc
+                            (WAI.requestBody req)
                         WAI.ChunkedBody -> bodyChunked
-            ex <- try $ runInternalState (HC.http req' manager) (WAI.resourceInternalState req)
-            case ex of
-                Left e -> wpsOnExc wps e req
-                Right res -> do
-                    (src, _) <- runInternalState
-                        (unwrapResumable $ HC.responseBody res)
-                        (WAI.resourceInternalState req)
-                    let conduit =
-                            case wpsProcessBody wps $ fmap (const ()) res of
-                                Nothing -> awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
-                                Just conduit -> conduit
-                    return $ WAI.responseSource
-                        (HC.responseStatus res)
-                        (filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $ HC.responseHeaders res) $ do
-                        yield Flush
-                        transPipe (flip runInternalState $ WAI.resourceInternalState req) src $= conduit
+            bracketOnError
+                (try $ HC.responseOpen req' manager)
+                (either (const $ return ()) HC.responseClose)
+                $ \ex -> do
+                case ex of
+                    Left e -> wpsOnExc wps e req
+                    Right res -> do
+                        let conduit =
+                                case wpsProcessBody wps $ fmap (const ()) res of
+                                    Nothing -> awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
+                                    Just conduit' -> conduit'
+                        WAI.responseSourceBracket
+                            (return ())
+                            (\() -> HC.responseClose res)
+                            $ \() -> do
+                                let src = bodyReaderSource $ HC.responseBody res
+                                return
+                                    ( HC.responseStatus res
+                                    , filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $ HC.responseHeaders res
+                                    , src $= conduit
+                                    )
   where
     strippedHeaders = Set.fromList ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
 
@@ -270,6 +275,7 @@ getHeaders =
         (key, bs') = S.break (== _colon) bs
         val = S.takeWhile (/= _cr) $ S.dropWhile isSpace $ S.drop 1 bs'
 
+{- FIXME
 -- | Convert a WAI application into a raw application, using Warp.
 waiToRaw :: WAI.Application -> DCN.Application IO
 waiToRaw app appdata0 =
@@ -286,14 +292,7 @@ waiToRaw app appdata0 =
                     res <- app req
                     keepAlive <- sendResponse
                         defaultSettings
-                            { settingsServerName = S8.pack $ concat
-                                [ "Warp/"
-                                , warpVersion
-                                , " + http-reverse-proxy/"
-                                , showVersion Paths_http_reverse_proxy.version
-                                ]
-                            }
-                        dummyCleaner req conn res
+                        req conn res
                     (fromClient'', _) <- liftIO fromClient' >>= unwrapResumable
                     return $ if keepAlive then Just fromClient'' else Nothing
         maybe (return ()) loop mfromClient
@@ -311,3 +310,36 @@ waiToRaw app appdata0 =
         , connClose = return ()
         , connRecv = error "connRecv should not be used"
         }
+        -}
+
+requestBodySource :: Int64 -> Source IO ByteString -> HC.RequestBody
+requestBodySource size = HC.RequestBodyStream size . srcToPopper
+
+requestBodySourceChunked :: Source IO ByteString -> HC.RequestBody
+requestBodySourceChunked = HC.RequestBodyStreamChunked . srcToPopper
+
+srcToPopper :: Source IO ByteString -> HC.GivesPopper ()
+srcToPopper src f = do
+    (rsrc0, ()) <- src $$+ return ()
+    irsrc <- newIORef rsrc0
+    let popper :: IO ByteString
+        popper = do
+            rsrc <- readIORef irsrc
+            (rsrc', mres) <- rsrc $$++ await
+            writeIORef irsrc rsrc'
+            case mres of
+                Nothing -> return S.empty
+                Just bs
+                    | S.null bs -> popper
+                    | otherwise -> return bs
+    f popper
+
+bodyReaderSource :: MonadIO m => BodyReader -> Source m ByteString
+bodyReaderSource br =
+    loop
+  where
+    loop = do
+        bs <- liftIO $ brRead br
+        unless (S.null bs) $ do
+            yield bs
+            loop
