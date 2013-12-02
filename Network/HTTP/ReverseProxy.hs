@@ -29,9 +29,8 @@ import Data.Conduit
 import Data.Default (def)
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Client as HC
-import Network.HTTP.Client.Body (BodyReader, brRead)
-import qualified Network.HTTP.Client.Types as HC
-import qualified Network.HTTP.Client.Manager as HC
+import Network.HTTP.Client (BodyReader, brRead)
+import qualified Network.HTTP.Client.Internal as HC
 import Control.Exception (bracketOnError)
 import Blaze.ByteString.Builder (fromByteString)
 import Data.Word8 (isSpace, _colon, _cr)
@@ -45,7 +44,7 @@ import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Data.Default (Default (..))
-import Network.Wai.Logger.Utils (showSockAddr)
+import Network.Wai.Logger (showSockAddr)
 import Blaze.ByteString.Builder (Builder)
 import qualified Data.Set as Set
 import Data.IORef
