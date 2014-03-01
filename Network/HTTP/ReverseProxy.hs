@@ -26,7 +26,7 @@ module Network.HTTP.ReverseProxy
 
 import BasicPrelude
 import Data.Conduit
-import Data.Default (def)
+import Data.Default.Class (def)
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client (BodyReader, brRead)
@@ -43,7 +43,7 @@ import qualified Data.Text.Lazy as TL
 import qualified Data.Conduit.Network as DCN
 import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
-import Data.Default (Default (..))
+import Data.Default.Class (Default (..))
 import Network.Wai.Logger (showSockAddr)
 import Blaze.ByteString.Builder (Builder)
 import qualified Data.Set as Set

@@ -29,7 +29,7 @@ library
                      , basic-prelude          >= 0.3.5
                      , network
                      , conduit                >= 0.5
-                     , data-default
+                     , data-default-class
                      , wai-logger
                      , resourcet
                      , containers
