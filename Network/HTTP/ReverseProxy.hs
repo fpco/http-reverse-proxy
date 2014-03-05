@@ -10,6 +10,7 @@ module Network.HTTP.ReverseProxy
     , defaultOnExc
     , waiProxyToSettings
     , WaiProxyResponse (..)
+    , warpProxyTo
       -- ** Settings
     , WaiProxySettings
     , def
@@ -24,6 +25,7 @@ module Network.HTTP.ReverseProxy
     -}
     ) where
 
+import qualified Data.Conduit.List as CL
 import BasicPrelude
 import Data.Conduit
 import Data.Default.Class (def)
@@ -45,9 +47,13 @@ import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Data.Default.Class (Default (..))
 import Network.Wai.Logger (showSockAddr)
-import Blaze.ByteString.Builder (Builder)
+import Blaze.ByteString.Builder (Builder, toLazyByteString)
 import qualified Data.Set as Set
 import Data.IORef
+import qualified Network.Wai.Handler.Warp as Warp
+import qualified Data.CaseInsensitive as CI
+import qualified Data.ByteString.Lazy as L
+import Control.Concurrent.Async (concurrently)
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -180,6 +186,62 @@ instance Default WaiProxySettings where
         , wpsSetIpHeader = SIHFromSocket
         , wpsProcessBody = const Nothing
         }
+
+-- | Similar to 'waiProxyToSettings', but instead of returning a WAI
+-- application, actually runs the application via Warp. This allows
+-- http-reverse-proxy to install intercept handlers into Warp, particularly to
+-- support websockets.
+--
+-- Note that some fields in the Warp settings may be overridden, in particular
+-- settingsIntercept.
+--
+-- Since 0.3.1
+warpProxyTo :: (WAI.Request -> IO WaiProxyResponse)
+            -> Warp.Settings
+            -> WaiProxySettings
+            -> HC.Manager
+            -> IO ()
+warpProxyTo getDest warpSettings wps manager = Warp.runSettings
+    (Warp.setIntercept intercept warpSettings)
+    (waiProxyToSettings getDest wps manager)
+  where
+    intercept req
+        | (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket" = do
+            dest <- getDest req
+            return $ case dest of
+                WPRProxyDest pd -> Just $ websocketProxy pd req
+                _ -> Nothing
+        | otherwise = return Nothing
+
+websocketProxy :: ProxyDest -> WAI.Request -> Source IO ByteString -> Warp.Connection -> IO ()
+websocketProxy pd req fromClientBody toClientConn = DCN.runTCPClient settings $ \server ->
+    void $ concurrently
+        (fromClient $$ CL.iterM print =$ DCN.appSink server)
+        (DCN.appSource server $$ toClient)
+  where
+    settings = (DCN.clientSettings (pdPort pd) (pdHost pd))
+    headers = renderHeaders req -- FIXME add x-real-ip header?
+    fromClient = do
+        mapM_ yield $ L.toChunks $ toLazyByteString headers
+        fromClientBody
+    toClient = CL.mapM_ (Warp.connSendAll toClientConn)
+
+renderHeaders :: WAI.Request -> Builder
+renderHeaders req = fromByteString (WAI.requestMethod req)
+                 <> fromByteString " "
+                 <> fromByteString (WAI.rawPathInfo req)
+                 <> fromByteString (WAI.rawQueryString req)
+                 <> (if WAI.httpVersion req == HT.http11
+                        then fromByteString " HTTP/1.1"
+                        else fromByteString " HTTP/1.0")
+                 <> mconcat (map goHeader $ WAI.requestHeaders req)
+                 <> fromByteString "\r\n\r\n"
+  where
+    goHeader (x, y)
+        = fromByteString "\r\n"
+       <> fromByteString (CI.original x)
+       <> fromByteString ": "
+       <> fromByteString y
 
 waiProxyToSettings :: (WAI.Request -> IO WaiProxyResponse)
                    -> WaiProxySettings
