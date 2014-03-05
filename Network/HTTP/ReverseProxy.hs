@@ -10,7 +10,6 @@ module Network.HTTP.ReverseProxy
     , defaultOnExc
     , waiProxyToSettings
     , WaiProxyResponse (..)
-    , warpProxyTo
       -- ** Settings
     , WaiProxySettings
     , def
@@ -25,14 +24,12 @@ module Network.HTTP.ReverseProxy
     -}
     ) where
 
-import qualified Data.Conduit.List as CL
 import BasicPrelude
 import Data.Conduit
 import Data.Default.Class (def)
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client (BodyReader, brRead)
-import qualified Network.HTTP.Client.Internal as HC
 import Control.Exception (bracketOnError)
 import Blaze.ByteString.Builder (fromByteString)
 import Data.Word8 (isSpace, _colon, _cr)
@@ -50,8 +47,6 @@ import Network.Wai.Logger (showSockAddr)
 import Blaze.ByteString.Builder (Builder, toLazyByteString)
 import qualified Data.Set as Set
 import Data.IORef
-import qualified Network.Wai.Handler.Warp as Warp
-import qualified Data.CaseInsensitive as CI
 import qualified Data.ByteString.Lazy as L
 import Control.Concurrent.Async (concurrently)
 
@@ -187,44 +182,25 @@ instance Default WaiProxySettings where
         , wpsProcessBody = const Nothing
         }
 
--- | Similar to 'waiProxyToSettings', but instead of returning a WAI
--- application, actually runs the application via Warp. This allows
--- http-reverse-proxy to install intercept handlers into Warp, particularly to
--- support websockets.
---
--- Note that some fields in the Warp settings may be overridden, in particular
--- settingsIntercept.
---
--- Since 0.3.1
-warpProxyTo :: (WAI.Request -> IO WaiProxyResponse)
-            -> Warp.Settings
-            -> WaiProxySettings
-            -> HC.Manager
-            -> IO ()
-warpProxyTo getDest warpSettings wps manager = Warp.runSettings
-    (Warp.setIntercept intercept warpSettings)
-    (waiProxyToSettings getDest wps manager)
+tryWebSockets :: ByteString -> Int -> WAI.Request -> IO WAI.Response -> IO WAI.Response
+tryWebSockets host port req fallback
+    | (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket" =
+        return $ flip WAI.responseRaw backup $ \fromClientBody toClient ->
+            DCN.runTCPClient settings $ \server ->
+                let toServer = DCN.appSink server
+                    fromServer = DCN.appSource server
+                    fromClient = do
+                        mapM_ yield $ L.toChunks $ toLazyByteString headers
+                        fromClientBody
+                    headers = renderHeaders req -- FIXME add x-real-ip header?
+                 in void $ concurrently
+                        (fromClient $$ toServer)
+                        (fromServer $$ toClient)
+    | otherwise = fallback
   where
-    intercept req
-        | (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket" = do
-            dest <- getDest req
-            return $ case dest of
-                WPRProxyDest pd -> Just $ websocketProxy pd req
-                _ -> Nothing
-        | otherwise = return Nothing
-
-websocketProxy :: ProxyDest -> WAI.Request -> Source IO ByteString -> Warp.Connection -> IO ()
-websocketProxy pd req fromClientBody toClientConn = DCN.runTCPClient settings $ \server ->
-    void $ concurrently
-        (fromClient $$ CL.iterM print =$ DCN.appSink server)
-        (DCN.appSource server $$ toClient)
-  where
-    settings = (DCN.clientSettings (pdPort pd) (pdHost pd))
-    headers = renderHeaders req -- FIXME add x-real-ip header?
-    fromClient = do
-        mapM_ yield $ L.toChunks $ toLazyByteString headers
-        fromClientBody
-    toClient = CL.mapM_ (Warp.connSendAll toClientConn)
+    backup = WAI.responseLBS HT.status500 [("Content-Type", "text/plain")]
+        "http-reverse-proxy detected WebSockets request, but server does not support responseRaw"
+    settings = DCN.clientSettings port host
 
 renderHeaders :: WAI.Request -> Builder
 renderHeaders req = fromByteString (WAI.requestMethod req)
@@ -256,7 +232,7 @@ waiProxyToSettings getDest wps manager req0 = do
                 WPRModifiedRequest req pd -> Right (pd, req)
     case edest of
         Left response -> return response
-        Right (ProxyDest host port, req) -> do
+        Right (ProxyDest host port, req) -> tryWebSockets host port req $ do
             let req' = def
                     { HC.method = WAI.requestMethod req
                     , HC.host = host
