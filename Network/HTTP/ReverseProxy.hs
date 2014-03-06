@@ -17,6 +17,7 @@ module Network.HTTP.ReverseProxy
     , wpsTimeout
     , wpsSetIpHeader
     , wpsProcessBody
+    , wpsUpgradeToRaw
     , SetIpHeader (..)
     {- FIXME
       -- * WAI to Raw
@@ -169,6 +170,14 @@ data WaiProxySettings = WaiProxySettings
     -- ^ Post-process the response body returned from the host.
     --
     -- Since 0.2.1
+    , wpsUpgradeToRaw :: WAI.Request -> Bool
+    -- ^ Determine if the request should be upgraded to a raw proxy connection,
+    -- as is needed for WebSockets. Requires WAI 2.1 or higher and a WAI
+    -- handler with raw response support (e.g., Warp) to work.
+    --
+    -- Default: check if the upgrade header is websocket.
+    --
+    -- Since 0.3.1
     }
 
 -- | How to set the X-Real-IP request header.
@@ -184,12 +193,14 @@ instance Default WaiProxySettings where
         , wpsTimeout = Nothing
         , wpsSetIpHeader = SIHFromSocket
         , wpsProcessBody = const Nothing
+        , wpsUpgradeToRaw = \req ->
+            (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket"
         }
 
 tryWebSockets :: WaiProxySettings -> ByteString -> Int -> WAI.Request -> IO WAI.Response -> IO WAI.Response
 #if MIN_VERSION_wai(2, 1, 0)
 tryWebSockets wps host port req fallback
-    | (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket" =
+    | wpsUpgradeToRaw wps req =
         return $ flip WAI.responseRaw backup $ \fromClientBody toClient ->
             DCN.runTCPClient settings $ \server ->
                 let toServer = DCN.appSink server
