@@ -12,11 +12,14 @@ import qualified Data.ByteString            as S
 import qualified Data.ByteString.Char8      as S8
 import qualified Data.ByteString.Lazy.Char8 as L8
 import           Data.Conduit               (Flush (..), await, runResourceT,
-                                             yield, ($$+-))
+                                             yield, ($$+-), (=$), ($$))
 import           Data.Conduit.Network       (HostPreference (HostIPv4, HostAny),
                                              ServerSettings, bindPort,
                                              runTCPServer, serverAfterBind,
-                                             serverSettings)
+                                             serverSettings, runTCPClient, clientSettings, appSource, appSink)
+import qualified Data.Conduit.Binary as CB
+import Data.Char (toUpper)
+import qualified Data.Conduit.List as CL
 import qualified Data.Conduit.Network
 import qualified Data.IORef                 as I
 import qualified Network.HTTP.Conduit       as HC
@@ -24,7 +27,7 @@ import           Network.HTTP.ReverseProxy  (ProxyDest (..),
                                              WaiProxyResponse (..),
                                              defaultOnExc, rawProxyTo,
                                              waiProxyTo{- FIXME, waiToRaw-})
-import           Network.HTTP.Types         (status200)
+import           Network.HTTP.Types         (status200, status500)
 import           Network.Socket             (sClose)
 import           Network.Wai                (responseSource,
                                              rawPathInfo, responseLBS)
@@ -150,6 +153,19 @@ main = hspec $ do
                                             $ Network.Wai.KnownLength
                                             $ fromIntegral
                                             $ S.length body)
+#endif
+#if MIN_VERSION_warp(2, 1, 0)
+        it "upgrade to raw" $
+            let app _ = return $ flip Network.Wai.responseRaw fallback $ \src sink ->
+                    src $$ CL.iterM print =$ CL.map (S8.map toUpper) =$ sink
+                fallback = responseLBS status500 [] "fallback used"
+             in withMan $ \manager ->
+                withWApp app $ \port1 ->
+                withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
+                    runTCPClient (clientSettings port2 "127.0.0.1") $ \ad -> do
+                        yield "GET / HTTP/1.1\r\nUpgrade: websockET\r\n\r\n" $$ appSink ad
+                        yield "hello" $$ appSink ad
+                        (appSource ad $$ CB.take 5) >>= (`shouldBe` "HELLO")
 #endif
     {- FIXME
     describe "waiToRaw" $ do
