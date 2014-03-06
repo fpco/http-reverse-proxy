@@ -30,8 +30,13 @@ import           Network.Wai                (responseSource,
                                              rawPathInfo, responseLBS)
 import qualified Network.Wai
 import           Network.Wai.Handler.Warp   (defaultSettings, runSettings,
+#if MIN_VERSION_warp(2, 1, 0)
+                                             setBeforeMainLoop,
+                                             setPort)
+#else
                                              settingsBeforeMainLoop,
                                              settingsPort)
+#endif
 import           System.IO.Unsafe           (unsafePerformIO)
 import           System.Timeout.Lifted      (timeout)
 import           Test.Hspec                 (describe, hspec, it, shouldBe)
@@ -54,12 +59,22 @@ withWApp app f = do
     port <- getPort
     baton <- newEmptyMVar
     bracket
-        (forkIO $ runSettings defaultSettings
-            { settingsPort = port
-            , settingsBeforeMainLoop = putMVar baton ()
-            } app `onException` putMVar baton ())
+        (forkIO $ runSettings (settings port baton)
+            app `onException` putMVar baton ())
         killThread
         (const $ takeMVar baton >> f port)
+  where
+#if MIN_VERSION_warp(2, 1, 0)
+    settings port baton
+        = setPort port
+        $ setBeforeMainLoop (putMVar baton ())
+          defaultSettings
+#else
+    settings port baton = defaultSettings
+        { settingsPort = port
+        , settingsBeforeMainLoop = putMVar baton ()
+        }
+#endif
 
 withCApp :: Data.Conduit.Network.Application IO -> (Int -> IO ()) -> IO ()
 withCApp app f = do

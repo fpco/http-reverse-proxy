@@ -44,11 +44,15 @@ import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Lifted (fork, killThread)
 import Data.Default.Class (Default (..))
 import Network.Wai.Logger (showSockAddr)
-import Blaze.ByteString.Builder (Builder, toLazyByteString)
 import qualified Data.Set as Set
 import Data.IORef
+#if MIN_VERSION_wai(2, 1, 0)
 import qualified Data.ByteString.Lazy as L
 import Control.Concurrent.Async (concurrently)
+import Blaze.ByteString.Builder (Builder, toLazyByteString)
+#else
+import Blaze.ByteString.Builder (Builder)
+#endif
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -183,6 +187,7 @@ instance Default WaiProxySettings where
         }
 
 tryWebSockets :: ByteString -> Int -> WAI.Request -> IO WAI.Response -> IO WAI.Response
+#if MIN_VERSION_wai(2, 1, 0)
 tryWebSockets host port req fallback
     | (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket" =
         return $ flip WAI.responseRaw backup $ \fromClientBody toClient ->
@@ -218,6 +223,9 @@ renderHeaders req = fromByteString (WAI.requestMethod req)
        <> fromByteString (CI.original x)
        <> fromByteString ": "
        <> fromByteString y
+#else
+tryWebSockets _ _ _ = id
+#endif
 
 waiProxyToSettings :: (WAI.Request -> IO WaiProxyResponse)
                    -> WaiProxySettings
