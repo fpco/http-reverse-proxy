@@ -186,9 +186,9 @@ instance Default WaiProxySettings where
         , wpsProcessBody = const Nothing
         }
 
-tryWebSockets :: ByteString -> Int -> WAI.Request -> IO WAI.Response -> IO WAI.Response
+tryWebSockets :: WaiProxySettings -> ByteString -> Int -> WAI.Request -> IO WAI.Response -> IO WAI.Response
 #if MIN_VERSION_wai(2, 1, 0)
-tryWebSockets host port req fallback
+tryWebSockets wps host port req fallback
     | (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket" =
         return $ flip WAI.responseRaw backup $ \fromClientBody toClient ->
             DCN.runTCPClient settings $ \server ->
@@ -197,7 +197,7 @@ tryWebSockets host port req fallback
                     fromClient = do
                         mapM_ yield $ L.toChunks $ toLazyByteString headers
                         fromClientBody
-                    headers = renderHeaders req -- FIXME add x-real-ip header?
+                    headers = renderHeaders req $ fixReqHeaders wps req
                  in void $ concurrently
                         (fromClient $$ toServer)
                         (fromServer $$ toClient)
@@ -207,16 +207,17 @@ tryWebSockets host port req fallback
         "http-reverse-proxy detected WebSockets request, but server does not support responseRaw"
     settings = DCN.clientSettings port host
 
-renderHeaders :: WAI.Request -> Builder
-renderHeaders req = fromByteString (WAI.requestMethod req)
-                 <> fromByteString " "
-                 <> fromByteString (WAI.rawPathInfo req)
-                 <> fromByteString (WAI.rawQueryString req)
-                 <> (if WAI.httpVersion req == HT.http11
-                        then fromByteString " HTTP/1.1"
-                        else fromByteString " HTTP/1.0")
-                 <> mconcat (map goHeader $ WAI.requestHeaders req)
-                 <> fromByteString "\r\n\r\n"
+renderHeaders :: WAI.Request -> HT.RequestHeaders -> Builder
+renderHeaders req headers
+    = fromByteString (WAI.requestMethod req)
+   <> fromByteString " "
+   <> fromByteString (WAI.rawPathInfo req)
+   <> fromByteString (WAI.rawQueryString req)
+   <> (if WAI.httpVersion req == HT.http11
+           then fromByteString " HTTP/1.1"
+           else fromByteString " HTTP/1.0")
+   <> mconcat (map goHeader headers)
+   <> fromByteString "\r\n\r\n"
   where
     goHeader (x, y)
         = fromByteString "\r\n"
@@ -224,8 +225,26 @@ renderHeaders req = fromByteString (WAI.requestMethod req)
        <> fromByteString ": "
        <> fromByteString y
 #else
-tryWebSockets _ _ _ = id
+tryWebSockets _ _ _ _ = id
 #endif
+
+strippedHeaders :: Set HT.HeaderName
+strippedHeaders = Set.fromList
+    ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
+
+fixReqHeaders :: WaiProxySettings -> WAI.Request -> HT.RequestHeaders
+fixReqHeaders wps req =
+    addXRealIP $ filter (\(key, _) -> not $ key `Set.member` strippedHeaders)
+               $ WAI.requestHeaders req
+  where
+    addXRealIP =
+        case wpsSetIpHeader wps of
+            SIHFromSocket -> (("X-Real-IP", S8.pack $ showSockAddr $ WAI.remoteHost req):)
+            SIHFromHeader ->
+                case lookup "x-real-ip" (WAI.requestHeaders req) <|> lookup "X-Forwarded-For" (WAI.requestHeaders req) of
+                    Nothing -> id
+                    Just ip -> (("X-Real-IP", ip):)
+            SIHNone -> id
 
 waiProxyToSettings :: (WAI.Request -> IO WaiProxyResponse)
                    -> WaiProxySettings
@@ -240,22 +259,14 @@ waiProxyToSettings getDest wps manager req0 = do
                 WPRModifiedRequest req pd -> Right (pd, req)
     case edest of
         Left response -> return response
-        Right (ProxyDest host port, req) -> tryWebSockets host port req $ do
+        Right (ProxyDest host port, req) -> tryWebSockets wps host port req $ do
             let req' = def
                     { HC.method = WAI.requestMethod req
                     , HC.host = host
                     , HC.port = port
                     , HC.path = WAI.rawPathInfo req
                     , HC.queryString = WAI.rawQueryString req
-                    , HC.requestHeaders = filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $
-                        (case wpsSetIpHeader wps of
-                            SIHFromSocket -> (("X-Real-IP", S8.pack $ showSockAddr $ WAI.remoteHost req):)
-                            SIHFromHeader ->
-                                case lookup "x-real-ip" (WAI.requestHeaders req) <|> lookup "X-Forwarded-For" (WAI.requestHeaders req) of
-                                    Nothing -> id
-                                    Just ip -> (("X-Real-IP", ip):)
-                            SIHNone -> id)
-                        $ WAI.requestHeaders req
+                    , HC.requestHeaders = fixReqHeaders wps req
                     , HC.requestBody = body
                     , HC.redirectCount = 0
                     , HC.checkStatus = \_ _ _ -> Nothing
@@ -289,8 +300,6 @@ waiProxyToSettings getDest wps manager req0 = do
                                     , filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $ HC.responseHeaders res
                                     , src $= conduit
                                     )
-  where
-    strippedHeaders = Set.fromList ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
 
 -- | Get the HTTP headers for the first request on the stream, returning on
 -- consumed bytes as leftovers. Has built-in limits on how many bytes it will
