@@ -1,5 +1,5 @@
 name:                http-reverse-proxy
-version:             0.3.1.1
+version:             0.3.1.2
 synopsis:            Reverse proxy HTTP requests, either over raw sockets or with WAI
 description:         Provides a simple means of reverse-proxying HTTP requests. The raw approach uses the same technique as leveraged by keter, whereas the WAI approach performs full request/response parsing via WAI and http-conduit.
 homepage:            https://github.com/fpco/http-reverse-proxy
@@ -26,7 +26,6 @@ library
                      , blaze-builder          >= 0.3
                      , http-client            >= 0.1
                      , wai                    >= 2.0
-                     , basic-prelude          >= 0.3.5
                      , network
                      , conduit                >= 0.5
                      , data-default-class
@@ -34,6 +33,7 @@ library
                      , resourcet
                      , containers
                      , async
+                     , transformers
 
 test-suite test
     type: exitcode-stdio-1.0
