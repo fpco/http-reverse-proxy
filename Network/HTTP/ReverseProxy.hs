@@ -30,6 +30,8 @@ import Data.Conduit
 import Data.Streaming.Network (readLens, AppData)
 import Data.Functor.Identity (Identity (..))
 import Data.Maybe (fromMaybe)
+#else
+import Data.Conduit.Network (AppData)
 #endif
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Default.Class (def)
@@ -88,12 +90,21 @@ data ProxyDest = ProxyDest
 -- 4. Pass all bytes across the wire unchanged.
 --
 -- If you need more control, such as modifying the request or response, use 'waiProxyTo'.
+#if MIN_VERSION_conduit(1,1,0)
 rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
            => (HT.RequestHeaders -> m (Either (DCN.AppData -> m ()) ProxyDest))
            -- ^ How to reverse proxy. A @Left@ result will run the given
            -- 'DCN.Application', whereas a @Right@ will reverse proxy to the
            -- given host\/port.
            -> AppData -> m ()
+#else
+rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
+           => (HT.RequestHeaders -> m (Either (DCN.AppData m -> m ()) ProxyDest))
+           -- ^ How to reverse proxy. A @Left@ result will run the given
+           -- 'DCN.Application', whereas a @Right@ will reverse proxy to the
+           -- given host\/port.
+           -> AppData m -> m ()
+#endif
 rawProxyTo getDest appdata = do
 #if MIN_VERSION_conduit(1,1,0)
     (rsrc, headers) <- liftIO $ fromClient $$+ getHeaders
