@@ -26,6 +26,12 @@ module Network.HTTP.ReverseProxy
     ) where
 
 import Data.Conduit
+#if MIN_VERSION_conduit(1,1,0)
+import Data.Streaming.Network (readLens, AppData)
+import Data.Functor.Identity (Identity (..))
+import Data.Maybe (fromMaybe)
+#endif
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Default.Class (def)
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Client as HC
@@ -83,21 +89,41 @@ data ProxyDest = ProxyDest
 --
 -- If you need more control, such as modifying the request or response, use 'waiProxyTo'.
 rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
-           => (HT.RequestHeaders -> m (Either (DCN.Application m) ProxyDest))
+           => (HT.RequestHeaders -> m (Either (DCN.AppData -> m ()) ProxyDest))
            -- ^ How to reverse proxy. A @Left@ result will run the given
            -- 'DCN.Application', whereas a @Right@ will reverse proxy to the
            -- given host\/port.
-           -> DCN.Application m
+           -> AppData -> m ()
 rawProxyTo getDest appdata = do
+#if MIN_VERSION_conduit(1,1,0)
+    (rsrc, headers) <- liftIO $ fromClient $$+ getHeaders
+#else
     (rsrc, headers) <- fromClient $$+ getHeaders
+#endif
     edest <- getDest headers
     case edest of
         Left app -> do
             -- We know that the socket will be closed by the toClient side, so
             -- we can throw away the finalizer here.
+#if MIN_VERSION_conduit(1,1,0)
+            irsrc <- liftIO $ newIORef rsrc
+            let readData = do
+                    rsrc1 <- readIORef irsrc
+                    (rsrc2, mbs) <- rsrc1 $$++ await
+                    writeIORef irsrc rsrc2
+                    return $ fromMaybe "" mbs
+            app $ runIdentity (readLens (const (Identity readData)) appdata)
+#else
             (fromClient', _) <- unwrapResumable rsrc
             app appdata { DCN.appSource = fromClient' }
+#endif
+
+
+#if MIN_VERSION_conduit(1,1,0)
+        Right (ProxyDest host port) -> liftIO $ DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
+#else
         Right (ProxyDest host port) -> DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
+#endif
   where
     fromClient = DCN.appSource appdata
     toClient = DCN.appSink appdata
