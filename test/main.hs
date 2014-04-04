@@ -8,14 +8,16 @@ import           Control.Exception          (IOException, bracket, onException,
                                              try)
 import           Control.Monad              (forever)
 import           Control.Monad.IO.Class     (liftIO)
+import           Control.Monad.Trans.Resource (runResourceT)
 import qualified Data.ByteString            as S
 import qualified Data.ByteString.Char8      as S8
 import qualified Data.ByteString.Lazy.Char8 as L8
-import           Data.Conduit               (Flush (..), await, runResourceT,
+import           Data.Conduit               (Flush (..), await,
                                              yield, ($$+-), (=$), ($$))
-import           Data.Conduit.Network       (HostPreference (HostIPv4, HostAny),
-                                             ServerSettings, bindPort,
-                                             runTCPServer, serverAfterBind,
+import Data.Streaming.Network (HostPreference, bindPortTCP, setAfterBind, AppData)
+import           Data.Conduit.Network       (HostPreference,
+                                             ServerSettings,
+                                             runTCPServer,
                                              serverSettings, runTCPClient, clientSettings, appSource, appSink)
 import qualified Data.Conduit.Binary as CB
 import Data.Char (toUpper)
@@ -50,7 +52,7 @@ nextPort = unsafePerformIO $ I.newIORef 15452
 getPort :: IO Int
 getPort = do
     port <- I.atomicModifyIORef nextPort $ \p -> (p + 1, p)
-    esocket <- try $ bindPort port HostIPv4
+    esocket <- try $ bindPortTCP port "*4"
     case esocket of
         Left (_ :: IOException) -> getPort
         Right socket -> do
@@ -79,13 +81,12 @@ withWApp app f = do
         }
 #endif
 
-withCApp :: Data.Conduit.Network.Application IO -> (Int -> IO ()) -> IO ()
+withCApp :: (AppData -> IO ()) -> (Int -> IO ()) -> IO ()
 withCApp app f = do
     port <- getPort
     baton <- newEmptyMVar
     let start = putMVar baton ()
-        settings :: ServerSettings IO
-        settings = (serverSettings port HostAny :: ServerSettings IO) { serverAfterBind = const start }
+        settings = setAfterBind (const start) (serverSettings port "*" :: ServerSettings)
     bracket
         (forkIO $ runTCPServer settings app `onException` start)
         killThread
