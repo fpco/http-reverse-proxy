@@ -1,44 +1,44 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-import           Blaze.ByteString.Builder   (fromByteString)
-import           Control.Concurrent         (forkIO, killThread, newEmptyMVar,
-                                             putMVar, takeMVar, threadDelay)
-import           Control.Exception          (IOException, bracket, onException,
-                                             try)
-import           Control.Monad              (forever)
-import           Control.Monad.IO.Class     (liftIO)
+import           Blaze.ByteString.Builder     (fromByteString)
+import           Control.Concurrent           (forkIO, killThread, newEmptyMVar,
+                                               putMVar, takeMVar, threadDelay)
+import           Control.Exception            (IOException, bracket,
+                                               onException, try)
+import           Control.Monad                (forever)
+import           Control.Monad.IO.Class       (liftIO)
 import           Control.Monad.Trans.Resource (runResourceT)
-import qualified Data.ByteString            as S
-import qualified Data.ByteString.Char8      as S8
-import qualified Data.ByteString.Lazy.Char8 as L8
-import           Data.Conduit               (Flush (..), await,
-                                             yield, ($$+-), (=$), ($$))
-import Data.Streaming.Network (HostPreference, bindPortTCP, setAfterBind, AppData)
-import           Data.Conduit.Network       (HostPreference,
-                                             ServerSettings,
-                                             runTCPServer,
-                                             serverSettings, runTCPClient, clientSettings, appSource, appSink)
-import qualified Data.Conduit.Binary as CB
-import Data.Char (toUpper)
-import qualified Data.Conduit.List as CL
+import qualified Data.ByteString              as S
+import qualified Data.ByteString.Char8        as S8
+import qualified Data.ByteString.Lazy.Char8   as L8
+import           Data.Char                    (toUpper)
+import           Data.Conduit                 (Flush (..), await, yield, ($$),
+                                               ($$+-), (=$))
+import qualified Data.Conduit.Binary          as CB
+import qualified Data.Conduit.List            as CL
+import           Data.Conduit.Network         (HostPreference, ServerSettings,
+                                               appSink, appSource,
+                                               clientSettings, runTCPClient,
+                                               runTCPServer, serverSettings)
 import qualified Data.Conduit.Network
-import qualified Data.IORef                 as I
-import qualified Network.HTTP.Conduit       as HC
-import           Network.HTTP.ReverseProxy  (ProxyDest (..),
-                                             WaiProxyResponse (..),
-                                             defaultOnExc, rawProxyTo,
-                                             waiProxyTo{- FIXME, waiToRaw-})
-import           Network.HTTP.Types         (status200, status500)
-import           Network.Socket             (sClose)
-import           Network.Wai                (responseSource,
-                                             rawPathInfo, responseLBS)
+import qualified Data.IORef                   as I
+import           Data.Streaming.Network       (AppData, HostPreference,
+                                               bindPortTCP, setAfterBind)
+import qualified Network.HTTP.Conduit         as HC
+import           Network.HTTP.ReverseProxy    (ProxyDest (..),
+                                               WaiProxyResponse (..),
+                                               defaultOnExc, rawProxyTo,
+                                               waiProxyTo)
+import           Network.HTTP.Types           (status200, status500)
+import           Network.Socket               (sClose)
+import           Network.Wai                  (rawPathInfo, responseLBS,
+                                               responseSource)
 import qualified Network.Wai
-import           Network.Wai.Handler.Warp   (defaultSettings, runSettings,
-                                             setBeforeMainLoop,
-                                             setPort)
-import           System.IO.Unsafe           (unsafePerformIO)
-import           System.Timeout.Lifted      (timeout)
-import           Test.Hspec                 (describe, hspec, it, shouldBe)
+import           Network.Wai.Handler.Warp     (defaultSettings, runSettings,
+                                               setBeforeMainLoop, setPort)
+import           System.IO.Unsafe             (unsafePerformIO)
+import           System.Timeout.Lifted        (timeout)
+import           Test.Hspec                   (describe, hspec, it, shouldBe)
 
 nextPort :: I.IORef Int
 nextPort = unsafePerformIO $ I.newIORef 15452
