@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 import           Blaze.ByteString.Builder   (fromByteString)
@@ -35,13 +34,8 @@ import           Network.Wai                (responseSource,
                                              rawPathInfo, responseLBS)
 import qualified Network.Wai
 import           Network.Wai.Handler.Warp   (defaultSettings, runSettings,
-#if MIN_VERSION_warp(2, 1, 0)
                                              setBeforeMainLoop,
                                              setPort)
-#else
-                                             settingsBeforeMainLoop,
-                                             settingsPort)
-#endif
 import           System.IO.Unsafe           (unsafePerformIO)
 import           System.Timeout.Lifted      (timeout)
 import           Test.Hspec                 (describe, hspec, it, shouldBe)
@@ -69,17 +63,10 @@ withWApp app f = do
         killThread
         (const $ takeMVar baton >> f port)
   where
-#if MIN_VERSION_warp(2, 1, 0)
     settings port baton
         = setPort port
         $ setBeforeMainLoop (putMVar baton ())
           defaultSettings
-#else
-    settings port baton = defaultSettings
-        { settingsPort = port
-        , settingsBeforeMainLoop = putMVar baton ()
-        }
-#endif
 
 withCApp :: (AppData -> IO ()) -> (Int -> IO ()) -> IO ()
 withCApp app f = do
@@ -131,7 +118,6 @@ main = hspec $ do
                         res <- HC.http req manager
                         HC.responseBody res $$+- await
                     mbs `shouldBe` Just (Just "hello")
-#if MIN_VERSION_wai(1, 4, 0)
         it "passes on body length" $
             let app req = return $ responseLBS
                     status200
@@ -154,8 +140,6 @@ main = hspec $ do
                                             $ Network.Wai.KnownLength
                                             $ fromIntegral
                                             $ S.length body)
-#endif
-#if MIN_VERSION_warp(2, 1, 0)
         it "upgrade to raw" $
             let app _ = return $ flip Network.Wai.responseRaw fallback $ \src sink ->
                     src $$ CL.iterM print =$ CL.map (S8.map toUpper) =$ sink
@@ -167,7 +151,6 @@ main = hspec $ do
                         yield "GET / HTTP/1.1\r\nUpgrade: websockET\r\n\r\n" $$ appSink ad
                         yield "hello" $$ appSink ad
                         (appSource ad $$ CB.take 5) >>= (`shouldBe` "HELLO")
-#endif
     {- FIXME
     describe "waiToRaw" $ do
         it "works" $ do
