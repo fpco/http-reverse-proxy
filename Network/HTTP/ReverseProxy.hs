@@ -289,7 +289,8 @@ strippedHeaders = Set.fromList
 
 fixReqHeaders :: WaiProxySettings -> WAI.Request -> HT.RequestHeaders
 fixReqHeaders wps req =
-    addXRealIP $ filter (\(key, _) -> not $ key `Set.member` strippedHeaders)
+    addXRealIP $ filter (\(key, value) -> not $ key `Set.member` strippedHeaders
+                                       || (key == "connection" && value == "close"))
                $ WAI.requestHeaders req
   where
     addXRealIP =
