@@ -25,7 +25,7 @@ library
                      , word8                  >= 0.0
                      , blaze-builder          >= 0.3
                      , http-client            >= 0.1
-                     , wai                    >= 2.0
+                     , wai                    >= 3.0
                      , network
                      , conduit                >= 0.5
                      , conduit-extra

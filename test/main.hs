@@ -5,7 +5,7 @@ import           Control.Concurrent           (forkIO, killThread, newEmptyMVar,
                                                putMVar, takeMVar, threadDelay)
 import           Control.Exception            (IOException, bracket,
                                                onException, try)
-import           Control.Monad                (forever)
+import           Control.Monad                (forever, unless)
 import           Control.Monad.IO.Class       (liftIO)
 import           Control.Monad.Trans.Resource (runResourceT)
 import qualified Data.ByteString              as S
@@ -13,7 +13,7 @@ import qualified Data.ByteString.Char8        as S8
 import qualified Data.ByteString.Lazy.Char8   as L8
 import           Data.Char                    (toUpper)
 import           Data.Conduit                 (Flush (..), await, yield, ($$),
-                                               ($$+-), (=$))
+                                               ($$+-), (=$), awaitForever)
 import qualified Data.Conduit.Binary          as CB
 import qualified Data.Conduit.List            as CL
 import           Data.Conduit.Network         (HostPreference, ServerSettings,
@@ -32,7 +32,7 @@ import           Network.HTTP.ReverseProxy    (ProxyDest (..),
 import           Network.HTTP.Types           (status200, status500)
 import           Network.Socket               (sClose)
 import           Network.Wai                  (rawPathInfo, responseLBS,
-                                               responseSource)
+                                               responseStream)
 import qualified Network.Wai
 import           Network.Wai.Handler.Warp     (defaultSettings, runSettings,
                                                setBeforeMainLoop, setPort)
@@ -89,14 +89,14 @@ main = hspec $ do
         it "works" $
             let content = "mainApp"
              in withMan $ \manager ->
-                withWApp (const $ return $ responseLBS status200 [] content) $ \port1 ->
+                withWApp (\_ f -> f $ responseLBS status200 [] content) $ \port1 ->
                 withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
                 withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
                     lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
                     lbs `shouldBe` content
         it "modified path" $
             let content = "/somepath"
-                app req = return $ responseLBS status200 [] $ L8.fromChunks [rawPathInfo req]
+                app req f = f $ responseLBS status200 [] $ L8.fromChunks [rawPathInfo req]
                 modReq pdest req = return $ WPRModifiedRequest
                     (req { rawPathInfo = content })
                     pdest
@@ -107,9 +107,9 @@ main = hspec $ do
                     lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
                     S8.concat (L8.toChunks lbs) `shouldBe` content
         it "deals with streaming data" $
-            let app _ = return $ responseSource status200 [] $ forever $ do
-                    yield $ Chunk $ fromByteString "hello"
-                    yield Flush
+            let app _ f = f $ responseStream status200 [] $ \sendChunk flush -> forever $ do
+                    sendChunk $ fromByteString "hello"
+                    flush
                     liftIO $ threadDelay 10000000
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
@@ -120,7 +120,7 @@ main = hspec $ do
                         HC.responseBody res $$+- await
                     mbs `shouldBe` Just (Just "hello")
         it "passes on body length" $
-            let app req = return $ responseLBS
+            let app req f = f $ responseLBS
                     status200
                     [("uplength", show' $ Network.Wai.requestBodyLength req)]
                     ""
@@ -142,8 +142,12 @@ main = hspec $ do
                                             $ fromIntegral
                                             $ S.length body)
         it "upgrade to raw" $
-            let app _ = return $ flip Network.Wai.responseRaw fallback $ \src sink ->
-                    src $$ CL.iterM print =$ CL.map (S8.map toUpper) =$ sink
+            let app _ f = f $ flip Network.Wai.responseRaw fallback $ \src sink -> do
+                    let src' = do
+                            bs <- liftIO src
+                            unless (S8.null bs) $ yield bs >> src'
+                        sink' = awaitForever $ liftIO . sink
+                    src' $$ CL.iterM print =$ CL.map (S8.map toUpper) =$ sink'
                 fallback = responseLBS status500 [] "fallback used"
              in withMan $ \manager ->
                 withWApp app $ \port1 ->

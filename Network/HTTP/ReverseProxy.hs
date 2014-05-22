@@ -38,7 +38,11 @@ import Data.Default.Class (def)
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client (BodyReader, brRead)
+#if MIN_VERSION_wai(3,0,0)
+import Control.Exception (bracket)
+#else
 import Control.Exception (bracketOnError)
+#endif
 import Blaze.ByteString.Builder (fromByteString)
 import Data.Word8 (isSpace, _colon, _cr)
 import qualified Data.ByteString as S
@@ -69,6 +73,7 @@ import Data.Monoid (mappend, (<>), mconcat)
 import Control.Exception.Lifted (try, SomeException, finally)
 import Control.Applicative ((<$>), (<|>))
 import Data.Set (Set)
+import qualified Data.Conduit.List as CL
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -151,7 +156,11 @@ rawProxyTo getDest appdata = do
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
 defaultOnExc :: SomeException -> WAI.Application
+#if MIN_VERSION_wai(3,0,0)
+defaultOnExc exc _ sendResponse = sendResponse $ WAI.responseLBS
+#else
 defaultOnExc exc _ = return $ WAI.responseLBS
+#endif
     HT.status502
     [("content-type", "text/plain")]
     ("Error connecting to gateway:\n\n" <> TLE.encodeUtf8 (TL.pack $ show exc))
@@ -241,6 +250,55 @@ instance Default WaiProxySettings where
             (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket"
         }
 
+#if MIN_VERSION_wai(2, 1, 0)
+renderHeaders :: WAI.Request -> HT.RequestHeaders -> Builder
+renderHeaders req headers
+    = fromByteString (WAI.requestMethod req)
+   <> fromByteString " "
+   <> fromByteString (WAI.rawPathInfo req)
+   <> fromByteString (WAI.rawQueryString req)
+   <> (if WAI.httpVersion req == HT.http11
+           then fromByteString " HTTP/1.1"
+           else fromByteString " HTTP/1.0")
+   <> mconcat (map goHeader headers)
+   <> fromByteString "\r\n\r\n"
+  where
+    goHeader (x, y)
+        = fromByteString "\r\n"
+       <> fromByteString (CI.original x)
+       <> fromByteString ": "
+       <> fromByteString y
+#endif
+
+#if MIN_VERSION_wai(3, 0, 0)
+tryWebSockets :: WaiProxySettings -> ByteString -> Int -> WAI.Request -> (WAI.Response -> IO b) -> IO b -> IO b
+tryWebSockets wps host port req sendResponse fallback
+    | wpsUpgradeToRaw wps req =
+        sendResponse $ flip WAI.responseRaw backup $ \fromClientBody toClient ->
+            DCN.runTCPClient settings $ \server ->
+                let toServer = DCN.appSink server
+                    fromServer = DCN.appSource server
+                    fromClient = do
+                        mapM_ yield $ L.toChunks $ toLazyByteString headers
+                        let loop = do
+                                bs <- liftIO fromClientBody
+                                unless (S.null bs) $ do
+                                    yield bs
+                                    loop
+                        loop
+                    toClient' = awaitForever $ liftIO . toClient
+                    headers = renderHeaders req $ fixReqHeaders wps req
+                 in void $ concurrently
+                        (fromClient $$ toServer)
+                        (fromServer $$ toClient')
+    | otherwise = fallback
+  where
+    backup = WAI.responseLBS HT.status500 [("Content-Type", "text/plain")]
+        "http-reverse-proxy detected WebSockets request, but server does not support responseRaw"
+    settings = DCN.clientSettings port host
+
+#else
+
 tryWebSockets :: WaiProxySettings -> ByteString -> Int -> WAI.Request -> IO WAI.Response -> IO WAI.Response
 #if MIN_VERSION_wai(2, 1, 0)
 tryWebSockets wps host port req fallback
@@ -261,26 +319,10 @@ tryWebSockets wps host port req fallback
     backup = WAI.responseLBS HT.status500 [("Content-Type", "text/plain")]
         "http-reverse-proxy detected WebSockets request, but server does not support responseRaw"
     settings = DCN.clientSettings port host
-
-renderHeaders :: WAI.Request -> HT.RequestHeaders -> Builder
-renderHeaders req headers
-    = fromByteString (WAI.requestMethod req)
-   <> fromByteString " "
-   <> fromByteString (WAI.rawPathInfo req)
-   <> fromByteString (WAI.rawQueryString req)
-   <> (if WAI.httpVersion req == HT.http11
-           then fromByteString " HTTP/1.1"
-           else fromByteString " HTTP/1.0")
-   <> mconcat (map goHeader headers)
-   <> fromByteString "\r\n\r\n"
-  where
-    goHeader (x, y)
-        = fromByteString "\r\n"
-       <> fromByteString (CI.original x)
-       <> fromByteString ": "
-       <> fromByteString y
 #else
 tryWebSockets _ _ _ _ = id
+#endif
+
 #endif
 
 strippedHeaders :: Set HT.HeaderName
@@ -306,6 +348,55 @@ waiProxyToSettings :: (WAI.Request -> IO WaiProxyResponse)
                    -> WaiProxySettings
                    -> HC.Manager
                    -> WAI.Application
+#if MIN_VERSION_wai(3,0,0)
+waiProxyToSettings getDest wps manager req0 sendResponse = do
+    edest' <- getDest req0
+    let edest =
+            case edest' of
+                WPRResponse res -> Left res
+                WPRProxyDest pd -> Right (pd, req0)
+                WPRModifiedRequest req pd -> Right (pd, req)
+    case edest of
+        Left response -> sendResponse response
+        Right (ProxyDest host port, req) -> tryWebSockets wps host port req sendResponse $ do
+            let req' = def
+                    { HC.method = WAI.requestMethod req
+                    , HC.host = host
+                    , HC.port = port
+                    , HC.path = WAI.rawPathInfo req
+                    , HC.queryString = WAI.rawQueryString req
+                    , HC.requestHeaders = fixReqHeaders wps req
+                    , HC.requestBody = body
+                    , HC.redirectCount = 0
+                    , HC.checkStatus = \_ _ _ -> Nothing
+                    , HC.responseTimeout = wpsTimeout wps
+                    }
+                body =
+                    case WAI.requestBodyLength req of
+                        WAI.KnownLength i -> HC.RequestBodyStream
+                            (fromIntegral i)
+                            ($ WAI.requestBody req)
+                        WAI.ChunkedBody -> HC.RequestBodyStreamChunked ($ WAI.requestBody req)
+            bracket
+                (try $ HC.responseOpen req' manager)
+                (either (const $ return ()) HC.responseClose)
+                $ \ex -> do
+                case ex of
+                    Left e -> wpsOnExc wps e req sendResponse
+                    Right res -> do
+                        let conduit =
+                                case wpsProcessBody wps $ fmap (const ()) res of
+                                    Nothing -> awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
+                                    Just conduit' -> conduit'
+                            src = bodyReaderSource $ HC.responseBody res
+                        sendResponse $ WAI.responseStream
+                            (HC.responseStatus res)
+                            (filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $ HC.responseHeaders res)
+                            (\sendChunk flush -> src $= conduit $$ CL.mapM_ (\mb ->
+                                case mb of
+                                    Flush -> flush
+                                    Chunk b -> sendChunk b))
+#else
 waiProxyToSettings getDest wps manager req0 = do
     edest' <- getDest req0
     let edest =
@@ -356,6 +447,7 @@ waiProxyToSettings getDest wps manager req0 = do
                                     , filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $ HC.responseHeaders res
                                     , src $= conduit
                                     )
+#endif
 
 -- | Get the HTTP headers for the first request on the stream, returning on
 -- consumed bytes as leftovers. Has built-in limits on how many bytes it will
