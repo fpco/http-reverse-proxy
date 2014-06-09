@@ -1,5 +1,5 @@
 name:                http-reverse-proxy
-version:             0.4.0
+version:             0.4.0.1
 synopsis:            Reverse proxy HTTP requests, either over raw sockets or with WAI
 description:         Provides a simple means of reverse-proxying HTTP requests. The raw approach uses the same technique as leveraged by keter, whereas the WAI approach performs full request/response parsing via WAI and http-conduit.
 homepage:            https://github.com/fpco/http-reverse-proxy

@@ -268,12 +268,13 @@ fixReqHeaders wps req =
                                        || (key == "connection" && value == "close"))
                $ WAI.requestHeaders req
   where
+    fromSocket = (("X-Real-IP", S8.pack $ showSockAddr $ WAI.remoteHost req):)
     addXRealIP =
         case wpsSetIpHeader wps of
-            SIHFromSocket -> (("X-Real-IP", S8.pack $ showSockAddr $ WAI.remoteHost req):)
+            SIHFromSocket -> fromSocket
             SIHFromHeader ->
                 case lookup "x-real-ip" (WAI.requestHeaders req) <|> lookup "X-Forwarded-For" (WAI.requestHeaders req) of
-                    Nothing -> id
+                    Nothing -> fromSocket
                     Just ip -> (("X-Real-IP", ip):)
             SIHNone -> id
 
