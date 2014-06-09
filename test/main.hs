@@ -12,17 +12,16 @@ import qualified Data.ByteString              as S
 import qualified Data.ByteString.Char8        as S8
 import qualified Data.ByteString.Lazy.Char8   as L8
 import           Data.Char                    (toUpper)
-import           Data.Conduit                 (Flush (..), await, yield, ($$),
+import           Data.Conduit                 (await, yield, ($$),
                                                ($$+-), (=$), awaitForever)
 import qualified Data.Conduit.Binary          as CB
 import qualified Data.Conduit.List            as CL
-import           Data.Conduit.Network         (HostPreference, ServerSettings,
+import           Data.Conduit.Network         (ServerSettings,
                                                appSink, appSource,
                                                clientSettings, runTCPClient,
                                                runTCPServer, serverSettings)
-import qualified Data.Conduit.Network
 import qualified Data.IORef                   as I
-import           Data.Streaming.Network       (AppData, HostPreference,
+import           Data.Streaming.Network       (AppData,
                                                bindPortTCP, setAfterBind)
 import qualified Network.HTTP.Conduit         as HC
 import           Network.HTTP.ReverseProxy    (ProxyDest (..),

@@ -55,7 +55,6 @@ import Blaze.ByteString.Builder (Builder, toLazyByteString)
 import Data.ByteString (ByteString)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad (unless, void)
-import Data.Int (Int64)
 import Data.Monoid (mappend, (<>), mconcat)
 import Control.Exception.Lifted (try, SomeException, finally)
 import Control.Applicative ((<$>), (<|>))
@@ -146,6 +145,10 @@ data WaiProxyResponse = WPRResponse WAI.Response
                         -- user.
                         --
                         -- Since 0.2.0
+                      | WPRApplication WAI.Application
+                        -- ^ Respond with the given WAI Application.
+                        --
+                        -- Since 0.4.0
 
 -- | Creates a WAI 'WAI.Application' which will handle reverse proxies.
 --
@@ -282,11 +285,12 @@ waiProxyToSettings getDest wps manager req0 sendResponse = do
     edest' <- getDest req0
     let edest =
             case edest' of
-                WPRResponse res -> Left res
+                WPRResponse res -> Left $ \_req -> ($ res)
                 WPRProxyDest pd -> Right (pd, req0)
                 WPRModifiedRequest req pd -> Right (pd, req)
+                WPRApplication app -> Left app
     case edest of
-        Left response -> sendResponse response
+        Left app -> app req0 sendResponse
         Right (ProxyDest host port, req) -> tryWebSockets wps host port req sendResponse $ do
             let req' = def
                     { HC.method = WAI.requestMethod req
@@ -390,28 +394,6 @@ waiToRaw app appdata0 =
         , connRecv = error "connRecv should not be used"
         }
         -}
-
-requestBodySource :: Int64 -> Source IO ByteString -> HC.RequestBody
-requestBodySource size = HC.RequestBodyStream size . srcToPopper
-
-requestBodySourceChunked :: Source IO ByteString -> HC.RequestBody
-requestBodySourceChunked = HC.RequestBodyStreamChunked . srcToPopper
-
-srcToPopper :: Source IO ByteString -> HC.GivesPopper ()
-srcToPopper src f = do
-    (rsrc0, ()) <- src $$+ return ()
-    irsrc <- newIORef rsrc0
-    let popper :: IO ByteString
-        popper = do
-            rsrc <- readIORef irsrc
-            (rsrc', mres) <- rsrc $$++ await
-            writeIORef irsrc rsrc'
-            case mres of
-                Nothing -> return S.empty
-                Just bs
-                    | S.null bs -> popper
-                    | otherwise -> return bs
-    f popper
 
 bodyReaderSource :: MonadIO m => BodyReader -> Source m ByteString
 bodyReaderSource br =
