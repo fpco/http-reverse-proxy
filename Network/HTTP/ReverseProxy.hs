@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings, FlexibleContexts, ScopedTypeVariables #-}
-{-# LANGUAGE CPP #-}
 module Network.HTTP.ReverseProxy
     ( -- * Types
       ProxyDest (..)
@@ -26,23 +25,15 @@ module Network.HTTP.ReverseProxy
     ) where
 
 import Data.Conduit
-#if MIN_VERSION_conduit(1,1,0)
 import Data.Streaming.Network (readLens, AppData)
 import Data.Functor.Identity (Identity (..))
 import Data.Maybe (fromMaybe)
-#else
-import Data.Conduit.Network (AppData)
-#endif
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Default.Class (def)
 import qualified Network.Wai as WAI
 import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client (BodyReader, brRead)
-#if MIN_VERSION_wai(3,0,0)
 import Control.Exception (bracket)
-#else
-import Control.Exception (bracketOnError)
-#endif
 import Blaze.ByteString.Builder (fromByteString)
 import Data.Word8 (isSpace, _colon, _cr)
 import qualified Data.ByteString as S
@@ -58,13 +49,9 @@ import Data.Default.Class (Default (..))
 import Network.Wai.Logger (showSockAddr)
 import qualified Data.Set as Set
 import Data.IORef
-#if MIN_VERSION_wai(2, 1, 0)
 import qualified Data.ByteString.Lazy as L
 import Control.Concurrent.Async (concurrently)
 import Blaze.ByteString.Builder (Builder, toLazyByteString)
-#else
-import Blaze.ByteString.Builder (Builder)
-#endif
 import Data.ByteString (ByteString)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad (unless, void)
@@ -95,33 +82,19 @@ data ProxyDest = ProxyDest
 -- 4. Pass all bytes across the wire unchanged.
 --
 -- If you need more control, such as modifying the request or response, use 'waiProxyTo'.
-#if MIN_VERSION_conduit(1,1,0)
 rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
            => (HT.RequestHeaders -> m (Either (DCN.AppData -> m ()) ProxyDest))
            -- ^ How to reverse proxy. A @Left@ result will run the given
            -- 'DCN.Application', whereas a @Right@ will reverse proxy to the
            -- given host\/port.
            -> AppData -> m ()
-#else
-rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
-           => (HT.RequestHeaders -> m (Either (DCN.AppData m -> m ()) ProxyDest))
-           -- ^ How to reverse proxy. A @Left@ result will run the given
-           -- 'DCN.Application', whereas a @Right@ will reverse proxy to the
-           -- given host\/port.
-           -> AppData m -> m ()
-#endif
 rawProxyTo getDest appdata = do
-#if MIN_VERSION_conduit(1,1,0)
     (rsrc, headers) <- liftIO $ fromClient $$+ getHeaders
-#else
-    (rsrc, headers) <- fromClient $$+ getHeaders
-#endif
     edest <- getDest headers
     case edest of
         Left app -> do
             -- We know that the socket will be closed by the toClient side, so
             -- we can throw away the finalizer here.
-#if MIN_VERSION_conduit(1,1,0)
             irsrc <- liftIO $ newIORef rsrc
             let readData = do
                     rsrc1 <- readIORef irsrc
@@ -129,17 +102,9 @@ rawProxyTo getDest appdata = do
                     writeIORef irsrc rsrc2
                     return $ fromMaybe "" mbs
             app $ runIdentity (readLens (const (Identity readData)) appdata)
-#else
-            (fromClient', _) <- unwrapResumable rsrc
-            app appdata { DCN.appSource = fromClient' }
-#endif
 
 
-#if MIN_VERSION_conduit(1,1,0)
         Right (ProxyDest host port) -> liftIO $ DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
-#else
-        Right (ProxyDest host port) -> DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
-#endif
   where
     fromClient = DCN.appSource appdata
     toClient = DCN.appSink appdata
@@ -156,11 +121,7 @@ rawProxyTo getDest appdata = do
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
 defaultOnExc :: SomeException -> WAI.Application
-#if MIN_VERSION_wai(3,0,0)
 defaultOnExc exc _ sendResponse = sendResponse $ WAI.responseLBS
-#else
-defaultOnExc exc _ = return $ WAI.responseLBS
-#endif
     HT.status502
     [("content-type", "text/plain")]
     ("Error connecting to gateway:\n\n" <> TLE.encodeUtf8 (TL.pack $ show exc))
@@ -250,7 +211,6 @@ instance Default WaiProxySettings where
             (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket"
         }
 
-#if MIN_VERSION_wai(2, 1, 0)
 renderHeaders :: WAI.Request -> HT.RequestHeaders -> Builder
 renderHeaders req headers
     = fromByteString (WAI.requestMethod req)
@@ -268,9 +228,7 @@ renderHeaders req headers
        <> fromByteString (CI.original x)
        <> fromByteString ": "
        <> fromByteString y
-#endif
 
-#if MIN_VERSION_wai(3, 0, 0)
 tryWebSockets :: WaiProxySettings -> ByteString -> Int -> WAI.Request -> (WAI.Response -> IO b) -> IO b -> IO b
 tryWebSockets wps host port req sendResponse fallback
     | wpsUpgradeToRaw wps req =
@@ -297,34 +255,6 @@ tryWebSockets wps host port req sendResponse fallback
         "http-reverse-proxy detected WebSockets request, but server does not support responseRaw"
     settings = DCN.clientSettings port host
 
-#else
-
-tryWebSockets :: WaiProxySettings -> ByteString -> Int -> WAI.Request -> IO WAI.Response -> IO WAI.Response
-#if MIN_VERSION_wai(2, 1, 0)
-tryWebSockets wps host port req fallback
-    | wpsUpgradeToRaw wps req =
-        return $ flip WAI.responseRaw backup $ \fromClientBody toClient ->
-            DCN.runTCPClient settings $ \server ->
-                let toServer = DCN.appSink server
-                    fromServer = DCN.appSource server
-                    fromClient = do
-                        mapM_ yield $ L.toChunks $ toLazyByteString headers
-                        fromClientBody
-                    headers = renderHeaders req $ fixReqHeaders wps req
-                 in void $ concurrently
-                        (fromClient $$ toServer)
-                        (fromServer $$ toClient)
-    | otherwise = fallback
-  where
-    backup = WAI.responseLBS HT.status500 [("Content-Type", "text/plain")]
-        "http-reverse-proxy detected WebSockets request, but server does not support responseRaw"
-    settings = DCN.clientSettings port host
-#else
-tryWebSockets _ _ _ _ = id
-#endif
-
-#endif
-
 strippedHeaders :: Set HT.HeaderName
 strippedHeaders = Set.fromList
     ["content-length", "transfer-encoding", "accept-encoding", "content-encoding"]
@@ -348,7 +278,6 @@ waiProxyToSettings :: (WAI.Request -> IO WaiProxyResponse)
                    -> WaiProxySettings
                    -> HC.Manager
                    -> WAI.Application
-#if MIN_VERSION_wai(3,0,0)
 waiProxyToSettings getDest wps manager req0 sendResponse = do
     edest' <- getDest req0
     let edest =
@@ -396,58 +325,6 @@ waiProxyToSettings getDest wps manager req0 sendResponse = do
                                 case mb of
                                     Flush -> flush
                                     Chunk b -> sendChunk b))
-#else
-waiProxyToSettings getDest wps manager req0 = do
-    edest' <- getDest req0
-    let edest =
-            case edest' of
-                WPRResponse res -> Left res
-                WPRProxyDest pd -> Right (pd, req0)
-                WPRModifiedRequest req pd -> Right (pd, req)
-    case edest of
-        Left response -> return response
-        Right (ProxyDest host port, req) -> tryWebSockets wps host port req $ do
-            let req' = def
-                    { HC.method = WAI.requestMethod req
-                    , HC.host = host
-                    , HC.port = port
-                    , HC.path = WAI.rawPathInfo req
-                    , HC.queryString = WAI.rawQueryString req
-                    , HC.requestHeaders = fixReqHeaders wps req
-                    , HC.requestBody = body
-                    , HC.redirectCount = 0
-                    , HC.checkStatus = \_ _ _ -> Nothing
-                    , HC.responseTimeout = wpsTimeout wps
-                    }
-                bodyChunked = requestBodySourceChunked $ WAI.requestBody req
-                body =
-                    case WAI.requestBodyLength req of
-                        WAI.KnownLength i -> requestBodySource
-                            (fromIntegral i)
-                            (WAI.requestBody req)
-                        WAI.ChunkedBody -> bodyChunked
-            bracketOnError
-                (try $ HC.responseOpen req' manager)
-                (either (const $ return ()) HC.responseClose)
-                $ \ex -> do
-                case ex of
-                    Left e -> wpsOnExc wps e req
-                    Right res -> do
-                        let conduit =
-                                case wpsProcessBody wps $ fmap (const ()) res of
-                                    Nothing -> awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
-                                    Just conduit' -> conduit'
-                        WAI.responseSourceBracket
-                            (return ())
-                            (\() -> HC.responseClose res)
-                            $ \() -> do
-                                let src = bodyReaderSource $ HC.responseBody res
-                                return
-                                    ( HC.responseStatus res
-                                    , filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $ HC.responseHeaders res
-                                    , src $= conduit
-                                    )
-#endif
 
 -- | Get the HTTP headers for the first request on the stream, returning on
 -- consumed bytes as leftovers. Has built-in limits on how many bytes it will
