@@ -1,4 +1,9 @@
-{-# LANGUAGE OverloadedStrings, FlexibleContexts, ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE TupleSections         #-}
 module Network.HTTP.ReverseProxy
     ( -- * Types
       ProxyDest (..)
@@ -11,6 +16,7 @@ module Network.HTTP.ReverseProxy
     , WaiProxyResponse (..)
       -- ** Settings
     , WaiProxySettings
+    , LocalWaiProxySettings (..)
     , def
     , wpsOnExc
     , wpsTimeout
@@ -24,42 +30,43 @@ module Network.HTTP.ReverseProxy
     -}
     ) where
 
-import Data.Conduit
-import Data.Streaming.Network (readLens, AppData)
-import Data.Functor.Identity (Identity (..))
-import Data.Maybe (fromMaybe)
-import Control.Monad.Trans.Control (MonadBaseControl)
-import Data.Default.Class (def)
-import qualified Network.Wai as WAI
-import qualified Network.HTTP.Client as HC
-import Network.HTTP.Client (BodyReader, brRead)
-import Control.Exception (bracket)
-import Blaze.ByteString.Builder (fromByteString)
-import Data.Word8 (isSpace, _colon, _cr)
-import qualified Data.ByteString as S
-import qualified Data.ByteString.Char8 as S8
-import qualified Network.HTTP.Types as HT
-import qualified Data.CaseInsensitive as CI
-import qualified Data.Text.Lazy.Encoding as TLE
-import qualified Data.Text.Lazy as TL
-import qualified Data.Conduit.Network as DCN
-import Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar, takeMVar)
-import Control.Concurrent.Lifted (fork, killThread)
-import Data.Default.Class (Default (..))
-import Network.Wai.Logger (showSockAddr)
-import qualified Data.Set as Set
-import Data.IORef
-import qualified Data.ByteString.Lazy as L
-import Control.Concurrent.Async (concurrently)
-import Blaze.ByteString.Builder (Builder, toLazyByteString)
-import Data.ByteString (ByteString)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad (unless, void)
-import Data.Monoid (mappend, (<>), mconcat)
-import Control.Exception.Lifted (try, SomeException, finally)
-import Control.Applicative ((<$>), (<|>))
-import Data.Set (Set)
-import qualified Data.Conduit.List as CL
+import           Blaze.ByteString.Builder       (Builder, fromByteString,
+                                                 toLazyByteString)
+import           Control.Applicative            ((<$>), (<|>))
+import           Control.Concurrent.Async       (concurrently)
+import           Control.Concurrent.Lifted      (fork, killThread)
+import           Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar,
+                                                 takeMVar)
+import           Control.Exception              (bracket)
+import           Control.Exception.Lifted       (SomeException, finally, try)
+import           Control.Monad                  (unless, void)
+import           Control.Monad.IO.Class         (MonadIO, liftIO)
+import           Control.Monad.Trans.Control    (MonadBaseControl)
+import           Data.ByteString                (ByteString)
+import qualified Data.ByteString                as S
+import qualified Data.ByteString.Char8          as S8
+import qualified Data.ByteString.Lazy           as L
+import qualified Data.CaseInsensitive           as CI
+import           Data.Conduit
+import qualified Data.Conduit.List              as CL
+import qualified Data.Conduit.Network           as DCN
+import           Data.Default.Class             (Default (..), def)
+import           Data.Functor.Identity          (Identity (..))
+import           Data.IORef
+import           Data.Maybe                     (fromMaybe)
+import           Data.Monoid                    (mappend, mconcat, (<>))
+import           Data.Set                       (Set)
+import qualified Data.Set                       as Set
+import           Data.Streaming.Network         (AppData, readLens)
+import qualified Data.Text.Lazy                 as TL
+import qualified Data.Text.Lazy.Encoding        as TLE
+import           Data.Word8                     (isSpace, _colon, _cr)
+import           Network.HTTP.Client            (BodyReader, brRead)
+import qualified Network.HTTP.Client            as HC
+import qualified Network.HTTP.Types             as HT
+import qualified Network.Wai                    as WAI
+import           Network.Wai.Logger             (showSockAddr)
+import           System.Timeout.Lifted          (timeout)
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -174,6 +181,17 @@ waiProxyTo :: (WAI.Request -> IO WaiProxyResponse)
            -> WAI.Application
 waiProxyTo getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError }
 
+data LocalWaiProxySettings = LocalWaiProxySettings
+    { lpsTimeBound :: Maybe Int
+    -- ^ Allows to specify the maximum time allowed for the conection on per request basis.
+    --
+    -- Default: no timeouts
+    --
+    -- Since 0.4.2
+    }
+instance Default LocalWaiProxySettings where
+    def = LocalWaiProxySettings Nothing
+
 data WaiProxySettings = WaiProxySettings
     { wpsOnExc :: SomeException -> WAI.Application
     , wpsTimeout :: Maybe Int
@@ -195,6 +213,14 @@ data WaiProxySettings = WaiProxySettings
     -- Default: check if the upgrade header is websocket.
     --
     -- Since 0.3.1
+    , wpsGetDest :: Maybe (WAI.Request -> IO (LocalWaiProxySettings, WaiProxyResponse))
+    -- ^ Allow to override proxy settings for each request.
+    -- If you supply this field it will take precedence over
+    -- getDest parameter in waiProxyToSettings
+    --
+    -- Default: have one global setting
+    --
+    -- Since 0.4.2
     }
 
 -- | How to set the X-Real-IP request header.
@@ -212,6 +238,7 @@ instance Default WaiProxySettings where
         , wpsProcessBody = const Nothing
         , wpsUpgradeToRaw = \req ->
             (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket"
+        , wpsGetDest = Nothing
         }
 
 renderHeaders :: WAI.Request -> HT.RequestHeaders -> Builder
@@ -282,16 +309,24 @@ waiProxyToSettings :: (WAI.Request -> IO WaiProxyResponse)
                    -> WaiProxySettings
                    -> HC.Manager
                    -> WAI.Application
-waiProxyToSettings getDest wps manager req0 sendResponse = do
-    edest' <- getDest req0
+waiProxyToSettings getDest wps' manager req0 sendResponse = do
+    let wps = wps'{wpsGetDest = wpsGetDest wps' <|> Just (fmap (LocalWaiProxySettings $ wpsTimeout wps',) . getDest)}
+    (lps, edest') <- fromMaybe
+        (const $ return (def, WPRResponse $ WAI.responseLBS HT.status500 [] "proxy not setup"))
+        (wpsGetDest wps)
+        req0
     let edest =
             case edest' of
                 WPRResponse res -> Left $ \_req -> ($ res)
                 WPRProxyDest pd -> Right (pd, req0)
                 WPRModifiedRequest req pd -> Right (pd, req)
                 WPRApplication app -> Left app
+        timeBound us f =
+            timeout us f >>= \case
+                Just res -> return res
+                Nothing -> sendResponse $ WAI.responseLBS HT.status500 [] "timeBound"
     case edest of
-        Left app -> app req0 sendResponse
+        Left app -> maybe id timeBound (lpsTimeBound lps) $ app req0 sendResponse
         Right (ProxyDest host port, req) -> tryWebSockets wps host port req sendResponse $ do
             let req' = def
                     { HC.method = WAI.requestMethod req
@@ -303,7 +338,7 @@ waiProxyToSettings getDest wps manager req0 sendResponse = do
                     , HC.requestBody = body
                     , HC.redirectCount = 0
                     , HC.checkStatus = \_ _ _ -> Nothing
-                    , HC.responseTimeout = wpsTimeout wps
+                    , HC.responseTimeout = lpsTimeBound lps
                     }
                 body =
                     case WAI.requestBodyLength req of
@@ -314,14 +349,12 @@ waiProxyToSettings getDest wps manager req0 sendResponse = do
             bracket
                 (try $ HC.responseOpen req' manager)
                 (either (const $ return ()) HC.responseClose)
-                $ \ex -> do
-                case ex of
+                $ \case
                     Left e -> wpsOnExc wps e req sendResponse
                     Right res -> do
-                        let conduit =
-                                case wpsProcessBody wps $ fmap (const ()) res of
-                                    Nothing -> awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush)
-                                    Just conduit' -> conduit'
+                        let conduit = fromMaybe
+                                        (awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
+                                        (wpsProcessBody wps $ const () <$> res)
                             src = bodyReaderSource $ HC.responseBody res
                         sendResponse $ WAI.responseStream
                             (HC.responseStatus res)
