@@ -22,6 +22,7 @@ module Network.HTTP.ReverseProxy
     , wpsSetIpHeader
     , wpsProcessBody
     , wpsUpgradeToRaw
+    , wpsGetDest
     , SetIpHeader (..)
       -- *** Local settings
     , LocalWaiProxySettings
