@@ -206,7 +206,7 @@ defaultLocalWaiProxySettings = def
 -- Default: no timeouts
 --
 -- Since 0.4.2
-setLpsTimeBound :: Int -> LocalWaiProxySettings -> LocalWaiProxySettings
+setLpsTimeBound :: Maybe Int -> LocalWaiProxySettings -> LocalWaiProxySettings
 setLpsTimeBound x s = s { lpsTimeBound = x }
 
 data WaiProxySettings = WaiProxySettings
