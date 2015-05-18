@@ -16,7 +16,6 @@ module Network.HTTP.ReverseProxy
     , WaiProxyResponse (..)
       -- ** Settings
     , WaiProxySettings
-    , LocalWaiProxySettings (..)
     , def
     , wpsOnExc
     , wpsTimeout
@@ -24,6 +23,10 @@ module Network.HTTP.ReverseProxy
     , wpsProcessBody
     , wpsUpgradeToRaw
     , SetIpHeader (..)
+      -- *** Local settings
+    , LocalWaiProxySettings
+    , defaultLocalWaiProxySettings
+    , setLpsTimeBound
     {- FIXME
       -- * WAI to Raw
     , waiToRaw
@@ -191,6 +194,20 @@ data LocalWaiProxySettings = LocalWaiProxySettings
     }
 instance Default LocalWaiProxySettings where
     def = LocalWaiProxySettings Nothing
+
+-- | Default value for 'LocalWaiProxySettings', same as 'def' but with a more explicit name.
+--
+-- Since 0.4.2
+defaultLocalWaiProxySettings :: LocalWaiProxySettings
+defaultLocalWaiProxySettings = def
+
+-- | Allows to specify the maximum time allowed for the conection on per request basis.
+--
+-- Default: no timeouts
+--
+-- Since 0.4.2
+setLpsTimeBound :: Int -> LocalWaiProxySettings -> LocalWaiProxySettings
+setLpsTimeBound x s = s { lpsTimeBound = x }
 
 data WaiProxySettings = WaiProxySettings
     { wpsOnExc :: SomeException -> WAI.Application
