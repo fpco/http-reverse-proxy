@@ -15,7 +15,7 @@ extra-source-files:  README.md ChangeLog.md
 library
   exposed-modules:     Network.HTTP.ReverseProxy
   other-modules:       Paths_http_reverse_proxy
-  build-depends:       base                   >= 4         && < 5
+  build-depends:       base                   >= 4.6    && < 5
                      , monad-control          >= 0.3
                      , lifted-base            >= 0.1
                      , text                   >= 0.11
