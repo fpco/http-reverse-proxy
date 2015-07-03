@@ -46,7 +46,7 @@ nextPort = unsafePerformIO $ I.newIORef 15452
 getPort :: IO Int
 getPort = do
     port <- I.atomicModifyIORef nextPort $ \p -> (p + 1, p)
-    esocket <- try $ bindPortTCP port "*4"
+    esocket <- try $ bindPortTCP port "127.0.0.1"
     case esocket of
         Left (_ :: IOException) -> getPort
         Right socket -> do
