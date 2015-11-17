@@ -74,8 +74,9 @@ import           System.Timeout.Lifted          (timeout)
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
-    { pdHost :: !ByteString
-    , pdPort :: !Int
+    { pdHost   :: !ByteString
+    , pdPort   :: !Int
+    , pdSecure :: !Bool
     }
 
 -- | Set up a reverse proxy server, which will have a minimal overhead.
@@ -114,7 +115,8 @@ rawProxyTo getDest appdata = do
             app $ runIdentity (readLens (const (Identity readData)) appdata)
 
 
-        Right (ProxyDest host port) -> liftIO $ DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
+        Right (ProxyDest host port _secure) ->
+            liftIO $ DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
   where
     fromClient = DCN.appSource appdata
     toClient = DCN.appSink appdata
@@ -345,7 +347,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                 Nothing -> sendResponse $ WAI.responseLBS HT.status500 [] "timeBound"
     case edest of
         Left app -> maybe id timeBound (lpsTimeBound lps) $ app req0 sendResponse
-        Right (ProxyDest host port, req) -> tryWebSockets wps host port req sendResponse $ do
+        Right (ProxyDest host port secure, req) -> tryWebSockets wps host port req sendResponse $ do
             let req' = def
                     { HC.method = WAI.requestMethod req
                     , HC.host = host
@@ -355,6 +357,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                     , HC.requestHeaders = fixReqHeaders wps req
                     , HC.requestBody = body
                     , HC.redirectCount = 0
+                    , HC.secure = secure
                     , HC.checkStatus = \_ _ _ -> Nothing
                     , HC.responseTimeout = lpsTimeBound lps
                     }
