@@ -74,9 +74,8 @@ import           System.Timeout.Lifted          (timeout)
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
-    { pdHost   :: !ByteString
-    , pdPort   :: !Int
-    , pdSecure :: !Bool
+    { pdHost :: !ByteString
+    , pdPort :: !Int
     }
 
 -- | Set up a reverse proxy server, which will have a minimal overhead.
@@ -115,8 +114,7 @@ rawProxyTo getDest appdata = do
             app $ runIdentity (readLens (const (Identity readData)) appdata)
 
 
-        Right (ProxyDest host port _secure) ->
-            liftIO $ DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
+        Right (ProxyDest host port) -> liftIO $ DCN.runTCPClient (DCN.clientSettings port host) (withServer rsrc)
   where
     fromClient = DCN.appSource appdata
     toClient = DCN.appSink appdata
@@ -150,6 +148,8 @@ data WaiProxyResponse = WPRResponse WAI.Response
                         -- ^ Send to the given destination.
                         --
                         -- Since 0.2.0
+                      | WPRProxyDestSecure ProxyDest
+                        -- ^ Send to the given destination via HTTPS.
                       | WPRModifiedRequest WAI.Request ProxyDest
                         -- ^ Send to the given destination, but use the given
                         -- modified Request for computing the reverse-proxied
@@ -158,6 +158,9 @@ data WaiProxyResponse = WPRResponse WAI.Response
                         -- user.
                         --
                         -- Since 0.2.0
+                      | WPRModifiedRequestSecure WAI.Request ProxyDest
+                        -- ^ Same as WPRModifiedRequest but send to the
+                        -- given destination via HTTPS.
                       | WPRApplication WAI.Application
                         -- ^ Respond with the given WAI Application.
                         --
@@ -338,8 +341,10 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
     let edest =
             case edest' of
                 WPRResponse res -> Left $ \_req -> ($ res)
-                WPRProxyDest pd -> Right (pd, req0)
-                WPRModifiedRequest req pd -> Right (pd, req)
+                WPRProxyDest pd -> Right (pd, req0, False)
+                WPRProxyDestSecure pd -> Right (pd, req0, True)
+                WPRModifiedRequest req pd -> Right (pd, req, False)
+                WPRModifiedRequestSecure req pd -> Right (pd, req, True)
                 WPRApplication app -> Left app
         timeBound us f =
             timeout us f >>= \case
@@ -347,7 +352,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                 Nothing -> sendResponse $ WAI.responseLBS HT.status500 [] "timeBound"
     case edest of
         Left app -> maybe id timeBound (lpsTimeBound lps) $ app req0 sendResponse
-        Right (ProxyDest host port secure, req) -> tryWebSockets wps host port req sendResponse $ do
+        Right (ProxyDest host port, req, secure) -> tryWebSockets wps host port req sendResponse $ do
             let req' = def
                     { HC.method = WAI.requestMethod req
                     , HC.host = host
