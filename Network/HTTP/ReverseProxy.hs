@@ -4,6 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE TupleSections         #-}
+{-# LANGUAGE CPP                   #-}
 module Network.HTTP.ReverseProxy
     ( -- * Types
       ProxyDest (..)
@@ -353,8 +354,18 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
     case edest of
         Left app -> maybe id timeBound (lpsTimeBound lps) $ app req0 sendResponse
         Right (ProxyDest host port, req, secure) -> tryWebSockets wps host port req sendResponse $ do
-            let req' = def
-                    { HC.method = WAI.requestMethod req
+            let req' =
+#if MIN_VERSION_http_client(0, 5, 0)
+                  HC.defaultRequest
+                    { HC.checkResponse = \_ _ -> return ()
+                    , HC.responseTimeout = maybe HC.responseTimeoutNone HC.responseTimeoutMicro $ lpsTimeBound lps
+#else
+                  def
+                    { HC.checkStatus = \_ _ _ -> Nothing
+                    , HC.responseTimeout = lpsTimeBound lps
+#endif
+                    , HC.method = WAI.requestMethod req
+                    , HC.secure = secure
                     , HC.host = host
                     , HC.port = port
                     , HC.path = WAI.rawPathInfo req
@@ -362,9 +373,6 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                     , HC.requestHeaders = fixReqHeaders wps req
                     , HC.requestBody = body
                     , HC.redirectCount = 0
-                    , HC.secure = secure
-                    , HC.checkStatus = \_ _ _ -> Nothing
-                    , HC.responseTimeout = lpsTimeBound lps
                     }
                 body =
                     case WAI.requestBodyLength req of
