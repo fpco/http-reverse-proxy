@@ -358,7 +358,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
 #if MIN_VERSION_http_client(0, 5, 0)
                   HC.defaultRequest
                     { HC.checkResponse = \_ _ -> return ()
-                    , HC.responseTimeout = maybe HC.responseTimeoutNone (HC.responseTimeoutMicro . (1000 *)) $ lpsTimeBound lps
+                    , HC.responseTimeout = maybe HC.responseTimeoutNone HC.responseTimeoutMicro $ lpsTimeBound lps
 #else
                   def
                     { HC.checkStatus = \_ _ _ -> Nothing
