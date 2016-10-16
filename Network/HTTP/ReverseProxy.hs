@@ -182,8 +182,7 @@ data WaiProxyResponse = WPRResponse WAI.Response
 -- the proxied server. Not all servers necessarily support chunked request
 -- bodies, so please confirm that yours does (Warp, Snap, and Happstack, for example, do).
 waiProxyTo :: (WAI.Request -> IO WaiProxyResponse)
-           -- ^ How to reverse proxy. A @Left@ result will be sent verbatim as
-           -- the response, whereas @Right@ will cause a reverse proxy.
+           -- ^ How to reverse proxy.
            -> (SomeException -> WAI.Application)
            -- ^ How to handle exceptions when calling remote server. For a
            -- simple 502 error page, use 'defaultOnExc'.
