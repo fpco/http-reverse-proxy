@@ -1,3 +1,7 @@
+## 0.4.3.2
+
+* Minor doc cleanup
+
 ## 0.4.3.1
 
 * Use CPP so we can work with `http-client` pre and post 0.5 [#17](https://github.com/fpco/http-reverse-proxy/pull/17)
