@@ -8,6 +8,7 @@ import           Control.Exception            (IOException, bracket,
 import           Control.Monad                (forever, unless)
 import           Control.Monad.IO.Class       (liftIO)
 import           Control.Monad.Trans.Resource (runResourceT)
+import           Data.Maybe                   (fromMaybe)
 import qualified Data.ByteString              as S
 import qualified Data.ByteString.Char8        as S8
 import qualified Data.ByteString.Lazy.Char8   as L8
@@ -27,11 +28,15 @@ import qualified Network.HTTP.Conduit         as HC
 import           Network.HTTP.ReverseProxy    (ProxyDest (..),
                                                WaiProxyResponse (..),
                                                defaultOnExc, rawProxyTo,
+                                               WaiProxySettings (..),
+                                               SetIpHeader (..),
+                                               def,
+                                               waiProxyToSettings,
                                                waiProxyTo)
 import           Network.HTTP.Types           (status200, status500)
 import           Network.Socket               (sClose)
 import           Network.Wai                  (rawPathInfo, responseLBS,
-                                               responseStream)
+                                               responseStream, requestHeaders)
 import qualified Network.Wai
 import           Network.Wai.Handler.Warp     (defaultSettings, runSettings,
                                                setBeforeMainLoop, setPort)
@@ -155,6 +160,48 @@ main = hspec $ do
                         yield "GET / HTTP/1.1\r\nUpgrade: websockET\r\n\r\n" $$ appSink ad
                         yield "hello" $$ appSink ad
                         (appSource ad $$ CB.take 5) >>= (`shouldBe` "HELLO")
+        it "get real ip" $
+            let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
+                httpWithForwardedFor url = liftIO $ do
+                  man <- HC.newManager HC.tlsManagerSettings
+                  oreq <- liftIO $ HC.parseRequest url
+                  let req = oreq { HC.requestHeaders = [("X-Forwarded-For", "127.0.1.1, 127.0.0.1"), ("Connection", "close")] }
+                  HC.responseBody <$> HC.httpLbs req man
+                waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
+             in withMan $ \manager ->
+                withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
+                withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
+                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port3
+                    lbs `shouldBe` "127.0.1.1"
+        it "get real ip 2" $
+            let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
+                httpWithForwardedFor url = liftIO $ do
+                  man <- HC.newManager HC.tlsManagerSettings
+                  oreq <- liftIO $ HC.parseRequest url
+                  let req = oreq { HC.requestHeaders = [("X-Forwarded-For", "127.0.1.1"), ("Connection", "close")] }
+                  HC.responseBody <$> HC.httpLbs req man
+                waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
+             in withMan $ \manager ->
+                withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
+                withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
+                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port3
+                    lbs `shouldBe` "127.0.1.1"
+        it "get real ip 3" $
+            let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
+                httpWithForwardedFor url = liftIO $ do
+                  man <- HC.newManager HC.tlsManagerSettings
+                  oreq <- liftIO $ HC.parseRequest url
+                  let req = oreq { HC.requestHeaders = [("Connection", "close")] }
+                  HC.responseBody <$> HC.httpLbs req man
+                waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
+             in withMan $ \manager ->
+                withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
+                withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
+                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port3
+                    lbs `shouldBe` "127.0.0.1"
     {- FIXME
     describe "waiToRaw" $ do
         it "works" $ do
