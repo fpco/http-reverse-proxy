@@ -1,3 +1,7 @@
+## 0.4.3.3
+
+* `fixReqHeaders` may create weird `x-real-ip` header [#19](https://github.com/fpco/http-reverse-proxy/issues/19)
+
 ## 0.4.3.2
 
 * Minor doc cleanup
