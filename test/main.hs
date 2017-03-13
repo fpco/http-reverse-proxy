@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 import           Blaze.ByteString.Builder     (fromByteString)
+import           Control.Applicative          ((<$>))
 import           Control.Concurrent           (forkIO, killThread, newEmptyMVar,
                                                putMVar, takeMVar, threadDelay)
 import           Control.Exception            (IOException, bracket,
@@ -164,7 +165,7 @@ main = hspec $ do
             let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
                 httpWithForwardedFor url = liftIO $ do
                   man <- HC.newManager HC.tlsManagerSettings
-                  oreq <- liftIO $ HC.parseRequest url
+                  oreq <- liftIO $ HC.parseUrl url
                   let req = oreq { HC.requestHeaders = [("X-Forwarded-For", "127.0.1.1, 127.0.0.1"), ("Connection", "close")] }
                   HC.responseBody <$> HC.httpLbs req man
                 waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
@@ -178,7 +179,7 @@ main = hspec $ do
             let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
                 httpWithForwardedFor url = liftIO $ do
                   man <- HC.newManager HC.tlsManagerSettings
-                  oreq <- liftIO $ HC.parseRequest url
+                  oreq <- liftIO $ HC.parseUrl url
                   let req = oreq { HC.requestHeaders = [("X-Forwarded-For", "127.0.1.1"), ("Connection", "close")] }
                   HC.responseBody <$> HC.httpLbs req man
                 waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
@@ -192,7 +193,7 @@ main = hspec $ do
             let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
                 httpWithForwardedFor url = liftIO $ do
                   man <- HC.newManager HC.tlsManagerSettings
-                  oreq <- liftIO $ HC.parseRequest url
+                  oreq <- liftIO $ HC.parseUrl url
                   let req = oreq { HC.requestHeaders = [("Connection", "close")] }
                   HC.responseBody <$> HC.httpLbs req man
                 waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
