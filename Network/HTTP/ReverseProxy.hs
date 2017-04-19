@@ -122,12 +122,9 @@ rawProxyTo getDest appdata = do
   where
     fromClient = DCN.appSource appdata
     toClient = DCN.appSink appdata
-    withServer rsrc appdataServer = do
-        x <- newEmptyMVar
-        tid1 <- fork $ (rsrc $$+- toServer) `finally` putMVar x True
-        tid2 <- fork $ (fromServer $$ toClient) `finally` putMVar x False
-        y <- takeMVar x
-        killThread $ if y then tid2 else tid1
+    withServer rsrc appdataServer = void $ concurrently
+        (rsrc $$+- toServer)
+        (fromServer $$ toClient)
       where
         fromServer = DCN.appSource appdataServer
         toServer = DCN.appSink appdataServer
