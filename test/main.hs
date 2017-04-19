@@ -28,7 +28,7 @@ import           Data.Streaming.Network       (AppData,
 import qualified Network.HTTP.Conduit         as HC
 import           Network.HTTP.ReverseProxy    (ProxyDest (..),
                                                WaiProxyResponse (..),
-                                               defaultOnExc, rawProxyTo,
+                                               defaultOnExc, rawProxyTo, rawTcpProxyTo,
                                                WaiProxySettings (..),
                                                SetIpHeader (..),
                                                def,
@@ -89,16 +89,18 @@ withMan :: (HC.Manager -> IO ()) -> IO ()
 withMan = HC.withManager . (liftIO .)
 
 main :: IO ()
-main = hspec $ do
+main = hspec $
     describe "http-reverse-proxy" $ do
         it "works" $
             let content = "mainApp"
              in withMan $ \manager ->
                 withWApp (\_ f -> f $ responseLBS status200 [] content) $ \port1 ->
                 withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
-                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
-                    lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 ->
+                withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
+                    lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port4
                     lbs `shouldBe` content
+
         it "modified path" $
             let content = "/somepath"
                 app req f = f $ responseLBS status200 [] $ L8.fromChunks [rawPathInfo req]
@@ -108,8 +110,9 @@ main = hspec $ do
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
                 withWApp (waiProxyTo (modReq $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
-                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
-                    lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port3
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 ->
+                withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
+                    lbs <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port4
                     S8.concat (L8.toChunks lbs) `shouldBe` content
         it "deals with streaming data" $
             let app _ f = f $ responseStream status200 [] $ \sendChunk flush -> forever $ do
@@ -172,8 +175,9 @@ main = hspec $ do
              in withMan $ \manager ->
                 withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
                 withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
-                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
-                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port3
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 ->
+                withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
+                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port4
                     lbs `shouldBe` "127.0.1.1"
         it "get real ip 2" $
             let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
@@ -186,8 +190,9 @@ main = hspec $ do
              in withMan $ \manager ->
                 withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
                 withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
-                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
-                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port3
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 ->
+                withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
+                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port4
                     lbs `shouldBe` "127.0.1.1"
         it "get real ip 3" $
             let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
@@ -201,7 +206,8 @@ main = hspec $ do
                 withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
                 withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
                 withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 -> do
-                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port3
+                withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
+                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port4
                     lbs `shouldBe` "127.0.0.1"
     {- FIXME
     describe "waiToRaw" $ do
