@@ -10,6 +10,7 @@ module Network.HTTP.ReverseProxy
       ProxyDest (..)
       -- * Raw
     , rawProxyTo
+    , rawTcpProxyTo
       -- * WAI + http-conduit
     , waiProxyTo
     , defaultOnExc
@@ -130,6 +131,33 @@ rawProxyTo getDest appdata = do
       where
         fromServer = DCN.appSource appdataServer
         toServer = DCN.appSink appdataServer
+
+-- | Set up a reverse tcp proxy server, which will have a minimal overhead.
+--
+-- This function uses raw sockets, parsing as little of the request as
+-- possible. The workflow is:
+--
+-- 1. Open up a connection to the given host\/port.
+--
+-- 2. Pass all bytes across the wire unchanged.
+--
+-- If you need more control, such as modifying the request or response, use 'waiProxyTo'.
+rawTcpProxyTo :: (MonadBaseControl IO m, MonadIO m)
+           => ProxyDest
+           -> AppData
+           -> m ()
+rawTcpProxyTo (ProxyDest host port) appdata = liftIO $
+    DCN.runTCPClient (DCN.clientSettings port host) withServer
+  where
+    withServer appdataServer = do
+        x <- newEmptyMVar
+        tid1 <- sourceToSink appdata appdataServer $ putMVar x True
+        tid2 <- sourceToSink appdataServer appdata $ putMVar x False
+        y <- takeMVar x
+        killThread $ if y then tid2 else tid1
+     where
+       sourceToSink a b ex =
+          fork $ (DCN.appSource a $$ DCN.appSink b) `finally` ex
 
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
