@@ -142,6 +142,8 @@ rawProxyTo getDest appdata = do
 -- 2. Pass all bytes across the wire unchanged.
 --
 -- If you need more control, such as modifying the request or response, use 'waiProxyTo'.
+--
+-- Since 0.4.4
 rawTcpProxyTo :: (MonadBaseControl IO m, MonadIO m)
            => ProxyDest
            -> AppData
@@ -149,15 +151,9 @@ rawTcpProxyTo :: (MonadBaseControl IO m, MonadIO m)
 rawTcpProxyTo (ProxyDest host port) appdata = liftIO $
     DCN.runTCPClient (DCN.clientSettings port host) withServer
   where
-    withServer appdataServer = do
-        x <- newEmptyMVar
-        tid1 <- sourceToSink appdata appdataServer $ putMVar x True
-        tid2 <- sourceToSink appdataServer appdata $ putMVar x False
-        y <- takeMVar x
-        killThread $ if y then tid2 else tid1
-     where
-       sourceToSink a b ex =
-          fork $ (DCN.appSource a $$ DCN.appSink b) `finally` ex
+    withServer appdataServer = void $ concurrently
+      (DCN.appSource appdata       $$ DCN.appSink appdataServer)
+      (DCN.appSource appdataServer $$ DCN.appSink appdata      )
 
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
