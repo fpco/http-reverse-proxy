@@ -80,7 +80,7 @@ import           System.Timeout.Lifted          (timeout)
 data ProxyDest = ProxyDest
     { pdHost :: !ByteString
     , pdPort :: !Int
-    }
+    } deriving Eq
 
 -- | Set up a reverse proxy server, which will have a minimal overhead.
 --
