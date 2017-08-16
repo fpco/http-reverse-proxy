@@ -1,7 +1,11 @@
+## 0.4.5
+
+* add `Eq, Ord, Show, Read` instances to `ProxyDest`
+
 ## 0.4.4
 
-* add `rawTcpProxyTo` which can handle proxying connections without http headers 
-  [#21](https://github.com/fpco/http-reverse-proxy/issues/21) 
+* add `rawTcpProxyTo` which can handle proxying connections without http headers
+  [#21](https://github.com/fpco/http-reverse-proxy/issues/21)
 
 ## 0.4.3.3
 
