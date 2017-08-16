@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric         #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
@@ -69,6 +70,7 @@ import qualified Data.Text.Lazy.Encoding        as TLE
 import qualified Data.Text                      as T
 import qualified Data.Text.Encoding             as TE
 import           Data.Word8                     (isSpace, _colon, _cr)
+import           GHC.Generics                   (Generic)
 import           Network.HTTP.Client            (BodyReader, brRead)
 import qualified Network.HTTP.Client            as HC
 import qualified Network.HTTP.Types             as HT
@@ -80,7 +82,7 @@ import           System.Timeout.Lifted          (timeout)
 data ProxyDest = ProxyDest
     { pdHost :: !ByteString
     , pdPort :: !Int
-    } deriving Eq
+    } deriving (Read, Show, Eq, Ord, Generic)
 
 -- | Set up a reverse proxy server, which will have a minimal overhead.
 --
