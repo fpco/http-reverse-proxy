@@ -249,8 +249,10 @@ data WaiProxySettings = WaiProxySettings
     -- Default: SIHFromSocket
     --
     -- Since 0.2.0
-    , wpsProcessBody :: HC.Response () -> Maybe (Conduit ByteString IO (Flush Builder))
+    , wpsProcessBody :: WAI.Request -> HC.Response () -> Maybe (Conduit ByteString IO (Flush Builder))
     -- ^ Post-process the response body returned from the host.
+    --   The API for this function changed to include the extra 'WAI.Request'
+    --   parameter in version 1.0.0.
     --
     -- Since 0.2.1
     , wpsUpgradeToRaw :: WAI.Request -> Bool
@@ -283,7 +285,7 @@ instance Default WaiProxySettings where
         { wpsOnExc = defaultOnExc
         , wpsTimeout = Nothing
         , wpsSetIpHeader = SIHFromSocket
-        , wpsProcessBody = const Nothing
+        , wpsProcessBody = \_ _ -> Nothing
         , wpsUpgradeToRaw = \req ->
             (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket"
         , wpsGetDest = Nothing
@@ -415,7 +417,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                     Right res -> do
                         let conduit = fromMaybe
                                         (awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
-                                        (wpsProcessBody wps $ const () <$> res)
+                                        (wpsProcessBody wps req $ const () <$> res)
                             src = bodyReaderSource $ HC.responseBody res
                         sendResponse $ WAI.responseStream
                             (HC.responseStatus res)

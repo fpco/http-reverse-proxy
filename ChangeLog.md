@@ -1,3 +1,7 @@
+## 1.0.0
+
+* update `wpsProcessBody` to accept response's initial request
+
 ## 0.4.5
 
 * add `Eq, Ord, Show, Read` instances to `ProxyDest`
