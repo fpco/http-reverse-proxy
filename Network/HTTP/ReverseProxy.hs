@@ -252,7 +252,7 @@ data WaiProxySettings = WaiProxySettings
     , wpsProcessBody :: WAI.Request -> HC.Response () -> Maybe (Conduit ByteString IO (Flush Builder))
     -- ^ Post-process the response body returned from the host.
     --   The API for this function changed to include the extra 'WAI.Request'
-    --   parameter in version 1.0.0.
+    --   parameter in version 0.5.0.
     --
     -- Since 0.2.1
     , wpsUpgradeToRaw :: WAI.Request -> Bool

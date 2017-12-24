@@ -1,4 +1,4 @@
-## 1.0.0
+## 0.5.0
 
 * update `wpsProcessBody` to accept response's initial request
 
