@@ -1,3 +1,7 @@
+## 0.5.0.1
+
+* Support http-conduit 2.3 in test suite [#26](https://github.com/fpco/http-reverse-proxy/issues/26)
+
 ## 0.5.0
 
 * update `wpsProcessBody` to accept response's initial request

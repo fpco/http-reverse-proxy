@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 import           Blaze.ByteString.Builder     (fromByteString)
@@ -86,7 +87,7 @@ withCApp app f = do
         (const $ takeMVar baton >> f port)
 
 withMan :: (HC.Manager -> IO ()) -> IO ()
-withMan = HC.withManager . (liftIO .)
+withMan = (HC.newManager HC.tlsManagerSettings >>=)
 
 main :: IO ()
 main = hspec $
@@ -125,7 +126,11 @@ main = hspec $
                     req <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
                     mbs <- runResourceT $ timeout 1000000 $ do
                         res <- HC.http req manager
+#if MIN_VERSION_http_conduit(1, 3, 0)
+                        HC.responseBody res $$ await
+#else
                         HC.responseBody res $$+- await
+#endif
                     mbs `shouldBe` Just (Just "hello")
         it "passes on body length" $
             let app req f = f $ responseLBS
