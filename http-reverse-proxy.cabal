@@ -15,6 +15,8 @@ extra-source-files:  README.md ChangeLog.md
 library
   exposed-modules:     Network.HTTP.ReverseProxy
   other-modules:       Paths_http_reverse_proxy
+  if impl(ghc < 8)
+    buildable: False
   build-depends:       base                   >= 4.6    && < 5
                      , text                   >= 0.11
                      , bytestring             >= 0.9
@@ -51,7 +53,7 @@ test-suite test
                  , transformers
                  , unliftio
                  , network
-                 , http-conduit
+                 , http-conduit               >= 2.3
                  , resourcet
                  , streaming-commons
 

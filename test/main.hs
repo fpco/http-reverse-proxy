@@ -16,11 +16,7 @@ import qualified Data.ByteString.Char8        as S8
 import qualified Data.ByteString.Lazy.Char8   as L8
 import           Data.Char                    (toUpper)
 import           Data.Conduit                 (await, yield, (.|), runConduit,
-                                               awaitForever
-#if !MIN_VERSION_http_conduit(1, 3, 0)
-                                               , ($$+-)
-#endif
-                                               )
+                                               awaitForever)
 import qualified Data.Conduit.Binary          as CB
 import qualified Data.Conduit.List            as CL
 import           Data.Conduit.Network         (ServerSettings,
@@ -130,11 +126,7 @@ main = hspec $
                     req <- HC.parseUrlThrow $ "http://127.0.0.1:" ++ show port2
                     mbs <- runResourceT $ timeout 1000000 $ do
                         res <- HC.http req manager
-#if MIN_VERSION_http_conduit(1, 3, 0)
                         runConduit $ HC.responseBody res .| await
-#else
-                        HC.responseBody res $$+- await
-#endif
                     mbs `shouldBe` Just (Just "hello")
         it "passes on body length" $
             let app req f = f $ responseLBS
