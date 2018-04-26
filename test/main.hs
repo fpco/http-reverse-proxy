@@ -15,8 +15,12 @@ import qualified Data.ByteString              as S
 import qualified Data.ByteString.Char8        as S8
 import qualified Data.ByteString.Lazy.Char8   as L8
 import           Data.Char                    (toUpper)
-import           Data.Conduit                 (await, yield, ($$),
-                                               ($$+-), (=$), awaitForever)
+import           Data.Conduit                 (await, yield, (.|), runConduit,
+                                               awaitForever
+#if !MIN_VERSION_http_conduit(1, 3, 0)
+                                               , ($$+-)
+#endif
+                                               )
 import qualified Data.Conduit.Binary          as CB
 import qualified Data.Conduit.List            as CL
 import           Data.Conduit.Network         (ServerSettings,
@@ -32,18 +36,18 @@ import           Network.HTTP.ReverseProxy    (ProxyDest (..),
                                                defaultOnExc, rawProxyTo, rawTcpProxyTo,
                                                WaiProxySettings (..),
                                                SetIpHeader (..),
-                                               def,
+                                               defaultWaiProxySettings,
                                                waiProxyToSettings,
                                                waiProxyTo)
 import           Network.HTTP.Types           (status200, status500)
-import           Network.Socket               (sClose)
+import qualified Network.Socket
 import           Network.Wai                  (rawPathInfo, responseLBS,
                                                responseStream, requestHeaders)
 import qualified Network.Wai
 import           Network.Wai.Handler.Warp     (defaultSettings, runSettings,
                                                setBeforeMainLoop, setPort)
 import           System.IO.Unsafe             (unsafePerformIO)
-import           System.Timeout.Lifted        (timeout)
+import           UnliftIO                     (timeout)
 import           Test.Hspec                   (describe, hspec, it, shouldBe)
 
 nextPort :: I.IORef Int
@@ -57,7 +61,7 @@ getPort = do
     case esocket of
         Left (_ :: IOException) -> getPort
         Right socket -> do
-            sClose socket
+            Network.Socket.close socket
             return port
 
 withWApp :: Network.Wai.Application -> (Int -> IO ()) -> IO ()
@@ -123,11 +127,11 @@ main = hspec $
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
                 withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
-                    req <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
+                    req <- HC.parseUrlThrow $ "http://127.0.0.1:" ++ show port2
                     mbs <- runResourceT $ timeout 1000000 $ do
                         res <- HC.http req manager
 #if MIN_VERSION_http_conduit(1, 3, 0)
-                        HC.responseBody res $$ await
+                        runConduit $ HC.responseBody res .| await
 #else
                         HC.responseBody res $$+- await
 #endif
@@ -143,7 +147,7 @@ main = hspec $
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
                 withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 -> do
-                    req' <- HC.parseUrl $ "http://127.0.0.1:" ++ show port2
+                    req' <- HC.parseUrlThrow $ "http://127.0.0.1:" ++ show port2
                     let req = req'
                             { HC.requestBody = HC.RequestBodyBS body
                             }
@@ -160,23 +164,23 @@ main = hspec $
                             bs <- liftIO src
                             unless (S8.null bs) $ yield bs >> src'
                         sink' = awaitForever $ liftIO . sink
-                    src' $$ CL.iterM print =$ CL.map (S8.map toUpper) =$ sink'
+                    runConduit $ src' .| CL.iterM print .| CL.map (S8.map toUpper) .| sink'
                 fallback = responseLBS status500 [] "fallback used"
              in withMan $ \manager ->
                 withWApp app $ \port1 ->
                 withWApp (waiProxyTo (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
                     runTCPClient (clientSettings port2 "127.0.0.1") $ \ad -> do
-                        yield "GET / HTTP/1.1\r\nUpgrade: websockET\r\n\r\n" $$ appSink ad
-                        yield "hello" $$ appSink ad
-                        (appSource ad $$ CB.take 5) >>= (`shouldBe` "HELLO")
+                        runConduit $ yield "GET / HTTP/1.1\r\nUpgrade: websockET\r\n\r\n" .| appSink ad
+                        runConduit $ yield "hello" .| appSink ad
+                        (runConduit $ appSource ad .| CB.take 5) >>= (`shouldBe` "HELLO")
         it "get real ip" $
             let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
                 httpWithForwardedFor url = liftIO $ do
                   man <- HC.newManager HC.tlsManagerSettings
-                  oreq <- liftIO $ HC.parseUrl url
+                  oreq <- liftIO $ HC.parseUrlThrow url
                   let req = oreq { HC.requestHeaders = [("X-Forwarded-For", "127.0.1.1, 127.0.0.1"), ("Connection", "close")] }
                   HC.responseBody <$> HC.httpLbs req man
-                waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
+                waiProxyTo' getDest onError = waiProxyToSettings getDest defaultWaiProxySettings { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
              in withMan $ \manager ->
                 withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
                 withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
@@ -188,10 +192,10 @@ main = hspec $
             let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
                 httpWithForwardedFor url = liftIO $ do
                   man <- HC.newManager HC.tlsManagerSettings
-                  oreq <- liftIO $ HC.parseUrl url
+                  oreq <- liftIO $ HC.parseUrlThrow url
                   let req = oreq { HC.requestHeaders = [("X-Forwarded-For", "127.0.1.1"), ("Connection", "close")] }
                   HC.responseBody <$> HC.httpLbs req man
-                waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
+                waiProxyTo' getDest onError = waiProxyToSettings getDest defaultWaiProxySettings { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
              in withMan $ \manager ->
                 withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
                 withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
@@ -203,10 +207,10 @@ main = hspec $
             let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
                 httpWithForwardedFor url = liftIO $ do
                   man <- HC.newManager HC.tlsManagerSettings
-                  oreq <- liftIO $ HC.parseUrl url
+                  oreq <- liftIO $ HC.parseUrlThrow url
                   let req = oreq { HC.requestHeaders = [("Connection", "close")] }
                   HC.responseBody <$> HC.httpLbs req man
-                waiProxyTo' getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
+                waiProxyTo' getDest onError = waiProxyToSettings getDest defaultWaiProxySettings { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
              in withMan $ \manager ->
                 withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
                 withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->

@@ -19,7 +19,7 @@ module Network.HTTP.ReverseProxy
     , WaiProxyResponse (..)
       -- ** Settings
     , WaiProxySettings
-    , def
+    , defaultWaiProxySettings
     , wpsOnExc
     , wpsTimeout
     , wpsSetIpHeader
@@ -40,15 +40,7 @@ module Network.HTTP.ReverseProxy
 import           Blaze.ByteString.Builder       (Builder, fromByteString,
                                                  toLazyByteString)
 import           Control.Applicative            ((<$>), (<|>))
-import           Control.Concurrent.Async       (concurrently)
-import           Control.Concurrent.Lifted      (fork, killThread)
-import           Control.Concurrent.MVar.Lifted (newEmptyMVar, putMVar,
-                                                 takeMVar)
-import           Control.Exception              (bracket)
-import           Control.Exception.Lifted       (SomeException, finally, try)
-import           Control.Monad                  (unless, void)
-import           Control.Monad.IO.Class         (MonadIO, liftIO)
-import           Control.Monad.Trans.Control    (MonadBaseControl)
+import           Control.Monad                  (unless)
 import           Data.ByteString                (ByteString)
 import qualified Data.ByteString                as S
 import qualified Data.ByteString.Char8          as S8
@@ -57,7 +49,6 @@ import qualified Data.CaseInsensitive           as CI
 import           Data.Conduit
 import qualified Data.Conduit.List              as CL
 import qualified Data.Conduit.Network           as DCN
-import           Data.Default.Class             (Default (..), def)
 import           Data.Functor.Identity          (Identity (..))
 import           Data.IORef
 import           Data.Maybe                     (fromMaybe, listToMaybe)
@@ -76,7 +67,7 @@ import qualified Network.HTTP.Client            as HC
 import qualified Network.HTTP.Types             as HT
 import qualified Network.Wai                    as WAI
 import           Network.Wai.Logger             (showSockAddr)
-import           System.Timeout.Lifted          (timeout)
+import           UnliftIO                       (MonadIO, liftIO, MonadUnliftIO, timeout, SomeException, try, bracket, concurrently_)
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -98,7 +89,7 @@ data ProxyDest = ProxyDest
 -- 4. Pass all bytes across the wire unchanged.
 --
 -- If you need more control, such as modifying the request or response, use 'waiProxyTo'.
-rawProxyTo :: (MonadBaseControl IO m, MonadIO m)
+rawProxyTo :: MonadUnliftIO m
            => (HT.RequestHeaders -> m (Either (DCN.AppData -> m ()) ProxyDest))
            -- ^ How to reverse proxy. A @Left@ result will run the given
            -- 'DCN.Application', whereas a @Right@ will reverse proxy to the
@@ -124,9 +115,9 @@ rawProxyTo getDest appdata = do
   where
     fromClient = DCN.appSource appdata
     toClient = DCN.appSink appdata
-    withServer rsrc appdataServer = void $ concurrently
+    withServer rsrc appdataServer = concurrently_
         (rsrc $$+- toServer)
-        (fromServer $$ toClient)
+        (runConduit $ fromServer .| toClient)
       where
         fromServer = DCN.appSource appdataServer
         toServer = DCN.appSink appdataServer
@@ -143,16 +134,16 @@ rawProxyTo getDest appdata = do
 -- If you need more control, such as modifying the request or response, use 'waiProxyTo'.
 --
 -- Since 0.4.4
-rawTcpProxyTo :: (MonadBaseControl IO m, MonadIO m)
+rawTcpProxyTo :: MonadIO m
            => ProxyDest
            -> AppData
            -> m ()
 rawTcpProxyTo (ProxyDest host port) appdata = liftIO $
     DCN.runTCPClient (DCN.clientSettings port host) withServer
   where
-    withServer appdataServer = void $ concurrently
-      (DCN.appSource appdata       $$ DCN.appSink appdataServer)
-      (DCN.appSource appdataServer $$ DCN.appSink appdata      )
+    withServer appdataServer = concurrently_
+      (runConduit $ DCN.appSource appdata       .| DCN.appSink appdataServer)
+      (runConduit $ DCN.appSource appdataServer .| DCN.appSink appdata      )
 
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
@@ -213,7 +204,7 @@ waiProxyTo :: (WAI.Request -> IO WaiProxyResponse)
            -- simple 502 error page, use 'defaultOnExc'.
            -> HC.Manager -- ^ connection manager to utilize
            -> WAI.Application
-waiProxyTo getDest onError = waiProxyToSettings getDest def { wpsOnExc = onError }
+waiProxyTo getDest onError = waiProxyToSettings getDest defaultWaiProxySettings { wpsOnExc = onError }
 
 data LocalWaiProxySettings = LocalWaiProxySettings
     { lpsTimeBound :: Maybe Int
@@ -223,14 +214,12 @@ data LocalWaiProxySettings = LocalWaiProxySettings
     --
     -- Since 0.4.2
     }
-instance Default LocalWaiProxySettings where
-    def = LocalWaiProxySettings Nothing
 
 -- | Default value for 'LocalWaiProxySettings', same as 'def' but with a more explicit name.
 --
 -- Since 0.4.2
 defaultLocalWaiProxySettings :: LocalWaiProxySettings
-defaultLocalWaiProxySettings = def
+defaultLocalWaiProxySettings = LocalWaiProxySettings Nothing
 
 -- | Allows to specify the maximum time allowed for the conection on per request basis.
 --
@@ -249,7 +238,7 @@ data WaiProxySettings = WaiProxySettings
     -- Default: SIHFromSocket
     --
     -- Since 0.2.0
-    , wpsProcessBody :: WAI.Request -> HC.Response () -> Maybe (Conduit ByteString IO (Flush Builder))
+    , wpsProcessBody :: WAI.Request -> HC.Response () -> Maybe (ConduitT ByteString (Flush Builder) IO ())
     -- ^ Post-process the response body returned from the host.
     --   The API for this function changed to include the extra 'WAI.Request'
     --   parameter in version 0.5.0.
@@ -280,8 +269,11 @@ data SetIpHeader = SIHNone -- ^ Do not set the header
                  | SIHFromSocket -- ^ Set it from the socket's address.
                  | SIHFromHeader -- ^ Set it from either X-Real-IP or X-Forwarded-For, if present
 
-instance Default WaiProxySettings where
-    def = WaiProxySettings
+-- | Default value for 'WaiProxySettings'
+--
+-- @since 0.6.0
+defaultWaiProxySettings :: WaiProxySettings
+defaultWaiProxySettings = WaiProxySettings
         { wpsOnExc = defaultOnExc
         , wpsTimeout = Nothing
         , wpsSetIpHeader = SIHFromSocket
@@ -326,9 +318,9 @@ tryWebSockets wps host port req sendResponse fallback
                         loop
                     toClient' = awaitForever $ liftIO . toClient
                     headers = renderHeaders req $ fixReqHeaders wps req
-                 in void $ concurrently
-                        (fromClient $$ toServer)
-                        (fromServer $$ toClient')
+                 in concurrently_
+                        (runConduit $ fromClient .| toServer)
+                        (runConduit $ fromServer .| toClient')
     | otherwise = fallback
   where
     backup = WAI.responseLBS HT.status500 [("Content-Type", "text/plain")]
@@ -365,7 +357,7 @@ waiProxyToSettings :: (WAI.Request -> IO WaiProxyResponse)
 waiProxyToSettings getDest wps' manager req0 sendResponse = do
     let wps = wps'{wpsGetDest = wpsGetDest wps' <|> Just (fmap (LocalWaiProxySettings $ wpsTimeout wps',) . getDest)}
     (lps, edest') <- fromMaybe
-        (const $ return (def, WPRResponse $ WAI.responseLBS HT.status500 [] "proxy not setup"))
+        (const $ return (defaultLocalWaiProxySettings, WPRResponse $ WAI.responseLBS HT.status500 [] "proxy not setup"))
         (wpsGetDest wps)
         req0
     let edest =
@@ -422,7 +414,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                         sendResponse $ WAI.responseStream
                             (HC.responseStatus res)
                             (filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $ HC.responseHeaders res)
-                            (\sendChunk flush -> src $= conduit $$ CL.mapM_ (\mb ->
+                            (\sendChunk flush -> runConduit $ src .| conduit .| CL.mapM_ (\mb ->
                                 case mb of
                                     Flush -> flush
                                     Chunk b -> sendChunk b))
@@ -431,7 +423,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
 -- consumed bytes as leftovers. Has built-in limits on how many bytes it will
 -- consume (specifically, will not ask for another chunked after it receives
 -- 1000 bytes).
-getHeaders :: Monad m => Sink ByteString m HT.RequestHeaders
+getHeaders :: Monad m => ConduitT ByteString o m HT.RequestHeaders
 getHeaders =
     toHeaders <$> go id
   where
@@ -492,7 +484,7 @@ waiToRaw app appdata0 =
         }
         -}
 
-bodyReaderSource :: MonadIO m => BodyReader -> Source m ByteString
+bodyReaderSource :: MonadIO m => BodyReader -> ConduitT i ByteString m ()
 bodyReaderSource br =
     loop
   where
