@@ -173,6 +173,9 @@ data WaiProxyResponse = WPRResponse WAI.Response
                         -- request. This can be useful for reverse proxying to
                         -- a different path than the one specified. By the
                         -- user.
+                        -- The path will be taken from rawPathInfo while
+                        -- the queryString from rawQueryString of the
+                        -- request.
                         --
                         -- Since 0.2.0
                       | WPRModifiedRequestSecure WAI.Request ProxyDest
