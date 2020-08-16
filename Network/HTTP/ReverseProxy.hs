@@ -378,6 +378,8 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
     case edest of
         Left app -> maybe id timeBound (lpsTimeBound lps) $ app req0 sendResponse
         Right (ProxyDest host port, req, secure) -> tryWebSockets wps host port req sendResponse $ do
+            body <- HC.RequestBodyLBS <$> WAI.strictRequestBody req
+
             let req' =
 #if MIN_VERSION_http_client(0, 5, 0)
                   HC.defaultRequest
@@ -398,12 +400,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                     , HC.requestBody = body
                     , HC.redirectCount = 0
                     }
-                body =
-                    case WAI.requestBodyLength req of
-                        WAI.KnownLength i -> HC.RequestBodyStream
-                            (fromIntegral i)
-                            ($ WAI.requestBody req)
-                        WAI.ChunkedBody -> HC.RequestBodyStreamChunked ($ WAI.requestBody req)
+
             bracket
                 (try $ HC.responseOpen req' manager)
                 (either (const $ return ()) HC.responseClose)
