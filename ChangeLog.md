@@ -1,3 +1,7 @@
+## 0.6.0.1
+
+* Introduce a "semi cached body" to let the beginning of a request body be retried [#34](https://github.com/fpco/http-reverse-proxy/issues/34)
+
 ## 0.6.0
 
 * Switch over to `unliftio` and conduit 1.3

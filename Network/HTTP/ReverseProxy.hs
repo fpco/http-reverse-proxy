@@ -51,6 +51,8 @@ import qualified Data.Conduit.List              as CL
 import qualified Data.Conduit.Network           as DCN
 import           Data.Functor.Identity          (Identity (..))
 import           Data.IORef
+import           Data.List.NonEmpty             (NonEmpty (..))
+import qualified Data.List.NonEmpty             as NE
 import           Data.Maybe                     (fromMaybe, listToMaybe)
 import           Data.Monoid                    (mappend, mconcat, (<>))
 import           Data.Set                       (Set)
@@ -378,6 +380,12 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
     case edest of
         Left app -> maybe id timeBound (lpsTimeBound lps) $ app req0 sendResponse
         Right (ProxyDest host port, req, secure) -> tryWebSockets wps host port req sendResponse $ do
+            scb <- semiCachedBody (WAI.requestBody req)
+            let body =
+                  case WAI.requestBodyLength req of
+                      WAI.KnownLength i -> HC.RequestBodyStream (fromIntegral i) scb
+                      WAI.ChunkedBody -> HC.RequestBodyStreamChunked scb
+
             let req' =
 #if MIN_VERSION_http_client(0, 5, 0)
                   HC.defaultRequest
@@ -398,12 +406,6 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                     , HC.requestBody = body
                     , HC.redirectCount = 0
                     }
-                body =
-                    case WAI.requestBodyLength req of
-                        WAI.KnownLength i -> HC.RequestBodyStream
-                            (fromIntegral i)
-                            ($ WAI.requestBody req)
-                        WAI.ChunkedBody -> HC.RequestBodyStreamChunked ($ WAI.requestBody req)
             bracket
                 (try $ HC.responseOpen req' manager)
                 (either (const $ return ()) HC.responseClose)
@@ -421,6 +423,54 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                                 case mb of
                                     Flush -> flush
                                     Chunk b -> sendChunk b))
+
+-- | Introduce a minor level of caching to handle some basic
+-- retry cases inside http-client. But to avoid a DoS attack,
+-- don't cache more than 16384 bytes (somewhat arbitrary).
+--
+-- See: <https://github.com/fpco/http-reverse-proxy/issues/34#issuecomment-719136064>
+semiCachedBody :: IO ByteString -> IO (HC.GivesPopper ())
+semiCachedBody orig = do
+  ref <- newIORef $ SCBCaching 0 []
+  pure $ \needsPopper -> do
+    let fromChunks len chunks =
+          case NE.nonEmpty (reverse chunks) of
+            Nothing -> SCBCaching len chunks
+            Just toDrain -> SCBDraining len chunks toDrain
+    state0 <- readIORef ref >>=
+      \case
+        SCBCaching len chunks -> pure $ fromChunks len chunks
+        SCBDraining len chunks _ -> pure $ fromChunks len chunks
+        SCBTooMuchData -> error "Cannot retry this request body, need to force a new request"
+    writeIORef ref $! state0
+    let popper :: IO ByteString
+        popper = do
+          readIORef ref >>=
+            \case
+              SCBDraining len chunks (next:|rest) -> do
+                writeIORef ref $!
+                  case rest of
+                    [] -> SCBCaching len chunks
+                    x:xs -> SCBDraining len chunks (x:|xs)
+                pure next
+              SCBTooMuchData -> orig
+              SCBCaching len chunks -> do
+                bs <- orig
+                let newLen = len + S.length bs
+                writeIORef ref $!
+                  if newLen > maxCache
+                    then SCBTooMuchData
+                    else SCBCaching newLen (bs:chunks)
+                pure bs
+
+    needsPopper popper
+  where
+    maxCache = 16384
+
+data SCB
+  = SCBCaching !Int ![ByteString]
+  | SCBDraining !Int ![ByteString] !(NonEmpty ByteString)
+  | SCBTooMuchData
 
 -- | Get the HTTP headers for the first request on the stream, returning on
 -- consumed bytes as leftovers. Has built-in limits on how many bytes it will
