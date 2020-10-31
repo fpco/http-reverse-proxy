@@ -40,7 +40,7 @@ test-suite test
     type: exitcode-stdio-1.0
     main-is: main.hs
     hs-source-dirs: test
-    build-depends: base
+    build-depends: base < 10
                  , http-reverse-proxy
                  , wai
                  , http-types
