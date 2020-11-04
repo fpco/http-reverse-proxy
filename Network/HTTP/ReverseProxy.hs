@@ -426,7 +426,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
 
 -- | Introduce a minor level of caching to handle some basic
 -- retry cases inside http-client. But to avoid a DoS attack,
--- don't cache more than 16384 bytes (somewhat arbitrary).
+-- don't cache more than 65535 bytes (the theoretical max TCP packet size).
 --
 -- See: <https://github.com/fpco/http-reverse-proxy/issues/34#issuecomment-719136064>
 semiCachedBody :: IO ByteString -> IO (HC.GivesPopper ())
@@ -465,7 +465,7 @@ semiCachedBody orig = do
 
     needsPopper popper
   where
-    maxCache = 16384
+    maxCache = 65535
 
 data SCB
   = SCBCaching !Int ![ByteString]
