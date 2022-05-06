@@ -271,7 +271,7 @@ data WaiProxySettings = WaiProxySettings
     --
     -- Default: no op
     --
-    -- @since 0.6.0.2
+    -- @since 0.6.0.1
     }
 
 -- | How to set the X-Real-IP request header.

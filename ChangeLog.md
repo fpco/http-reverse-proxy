@@ -1,11 +1,9 @@
-## 0.6.0.2
-
-* Add `wpsLogRequest` function which provides the ability to log the
-  constructed `Request`.
 
 ## 0.6.0.1
 
 * Introduce a "semi cached body" to let the beginning of a request body be retried [#34](https://github.com/fpco/http-reverse-proxy/issues/34)
+* Add `wpsLogRequest` function which provides the ability to log the
+  constructed `Request`.
 
 ## 0.6.0
 
