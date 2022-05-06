@@ -26,6 +26,7 @@ module Network.HTTP.ReverseProxy
     , wpsProcessBody
     , wpsUpgradeToRaw
     , wpsGetDest
+    , wpsLogRequest
     , SetIpHeader (..)
       -- *** Local settings
     , LocalWaiProxySettings
@@ -265,6 +266,12 @@ data WaiProxySettings = WaiProxySettings
     -- Default: have one global setting
     --
     -- Since 0.4.2
+    , wpsLogRequest :: HC.Request -> IO ()
+    -- ^ Function provided to log the 'Request' that is constructed.
+    --
+    -- Default: no op
+    --
+    -- @since 0.6.0.2
     }
 
 -- | How to set the X-Real-IP request header.
@@ -286,6 +293,7 @@ defaultWaiProxySettings = WaiProxySettings
         , wpsUpgradeToRaw = \req ->
             (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket"
         , wpsGetDest = Nothing
+        , wpsLogRequest = const (pure ())
         }
 
 renderHeaders :: WAI.Request -> HT.RequestHeaders -> Builder
@@ -407,7 +415,9 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                     , HC.redirectCount = 0
                     }
             bracket
-                (try $ HC.responseOpen req' manager)
+                (try $ do
+                   liftIO $ wpsLogRequest wps' req'
+                   HC.responseOpen req' manager)
                 (either (const $ return ()) HC.responseClose)
                 $ \case
                     Left e -> wpsOnExc wps e req sendResponse
