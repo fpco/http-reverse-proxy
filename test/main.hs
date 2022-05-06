@@ -44,6 +44,7 @@ import           Network.Wai.Handler.Warp     (defaultSettings, runSettings,
                                                setBeforeMainLoop, setPort)
 import           System.IO.Unsafe             (unsafePerformIO)
 import           UnliftIO                     (timeout)
+import           UnliftIO.IORef
 import           Test.Hspec                   (describe, hspec, it, shouldBe)
 
 nextPort :: I.IORef Int
@@ -210,6 +211,29 @@ main = hspec $
                 withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
                     lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port4
                     lbs `shouldBe` "127.0.0.1"
+        it "performs log action" $
+          let ioref :: IO (IORef Int)
+              ioref = newIORef 1
+              performLogAction :: IORef Int -> IO ()
+              performLogAction ref = writeIORef ref 2
+              waiProxyTo' getDest onError manager ref  =
+                waiProxyToSettings
+                  getDest
+                  defaultWaiProxySettings
+                    { wpsOnExc = onError,
+                      wpsSetIpHeader = SIHFromHeader,
+                      wpsLogRequest = const (performLogAction ref)
+                    }
+                  manager
+           in withMan $ \manager ->
+                withWApp (\_ f -> f $ responseLBS status200 [] "works") $ \port1 -> do
+                  ref <- ioref
+                  withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager ref) $ \port2 ->
+                    withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 ->
+                      withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
+                        _ <- HC.simpleHttp $ "http://127.0.0.1:" ++ show port4
+                        lhs <- liftIO $ readIORef ref
+                        lhs `shouldBe` 2
     {- FIXME
     describe "waiToRaw" $ do
         it "works" $ do
