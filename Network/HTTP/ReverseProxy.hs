@@ -426,9 +426,12 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                                         (awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
                                         (wpsProcessBody wps req $ const () <$> res)
                             src = bodyReaderSource $ HC.responseBody res
+                            noChunked = HT.httpMajor (WAI.httpVersion req) >= 2 || WAI.requestMethod req == HT.methodHead
                         sendResponse $ WAI.responseStream
                             (HC.responseStatus res)
-                            (filter (\(key, _) -> not $ key `Set.member` strippedHeaders) $ HC.responseHeaders res)
+                            (filter (\(key, v) -> not (key `Set.member` strippedHeaders) ||
+                                                  key == "content-length" && (noChunked || v == "0"))
+                                    (HC.responseHeaders res))
                             (\sendChunk flush -> runConduit $ src .| conduit .| CL.mapM_ (\mb ->
                                 case mb of
                                     Flush -> flush
