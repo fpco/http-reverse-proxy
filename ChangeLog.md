@@ -1,4 +1,8 @@
 
+## 0.6.0.2
+
+* Fix docker registry reverse proxying by preserving the 'Content-Length' response header to HTTP/2 and HEAD requests. [#45](https://github.com/fpco/http-reverse-proxy/pull/45)
+
 ## 0.6.0.1
 
 * Introduce a "semi cached body" to let the beginning of a request body be retried [#34](https://github.com/fpco/http-reverse-proxy/issues/34)
