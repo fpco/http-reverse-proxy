@@ -1,2 +1,6 @@
 resolver: lts-18.28
 
+nix:
+  pure: false
+  packages:
+  - zlib
