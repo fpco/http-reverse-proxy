@@ -1,4 +1,10 @@
 
+## 0.7.0.0
+
+* Support HTTP 103 Early Hints responses in `waiProxyTo`.
+  * This requires `http-client >= 0.7.16`.
+  * It also necessitates a change in the `wpsOnExc` handler. Now it is passed a raw callback for writing bytes to the client, rather than a `WAI.Application`. You can see an example of how to use this in the new `defaultOnExc`.
+
 ## 0.6.0.2
 
 * Fix docker registry reverse proxying by preserving the 'Content-Length' response header to HTTP/2 and HEAD requests. [#45](https://github.com/fpco/http-reverse-proxy/pull/45)
