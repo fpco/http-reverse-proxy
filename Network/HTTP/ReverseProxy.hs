@@ -38,39 +38,38 @@ module Network.HTTP.ReverseProxy
     -}
     ) where
 
-import           Blaze.ByteString.Builder       (Builder, fromByteString,
-                                                 toLazyByteString)
-import           Control.Applicative            ((<$>), (<|>))
-import           Control.Monad                  (unless)
-import           Data.ByteString                (ByteString)
-import qualified Data.ByteString                as S
-import qualified Data.ByteString.Char8          as S8
-import qualified Data.ByteString.Lazy           as L
-import qualified Data.CaseInsensitive           as CI
+import           Blaze.ByteString.Builder             (Builder, fromByteString, toByteString, toLazyByteString)
+import           Control.Applicative                  ((<$>), (<|>))
+import           Control.Monad                        (unless, when)
+import           Data.ByteString                      (ByteString)
+import qualified Data.ByteString                      as S
+import           Data.ByteString.Builder.HTTP.Chunked (chunkedTransferEncoding, chunkedTransferTerminator)
+import qualified Data.ByteString.Char8                as S8
+import qualified Data.ByteString.Lazy                 as L
+import qualified Data.CaseInsensitive                 as CI
 import           Data.Conduit
-import qualified Data.Conduit.List              as CL
-import qualified Data.Conduit.Network           as DCN
-import           Data.Functor.Identity          (Identity (..))
+import qualified Data.Conduit.List                    as CL
+import qualified Data.Conduit.Network                 as DCN
+import           Data.Functor.Identity                (Identity (..))
 import           Data.IORef
-import           Data.List.NonEmpty             (NonEmpty (..))
-import qualified Data.List.NonEmpty             as NE
-import           Data.Maybe                     (fromMaybe, listToMaybe)
-import           Data.Monoid                    (mappend, mconcat, (<>))
-import           Data.Set                       (Set)
-import qualified Data.Set                       as Set
-import           Data.Streaming.Network         (AppData, readLens)
-import qualified Data.Text.Lazy                 as TL
-import qualified Data.Text.Lazy.Encoding        as TLE
-import qualified Data.Text                      as T
-import qualified Data.Text.Encoding             as TE
-import           Data.Word8                     (isSpace, _colon, _cr)
-import           GHC.Generics                   (Generic)
-import           Network.HTTP.Client            (BodyReader, brRead)
-import qualified Network.HTTP.Client            as HC
-import qualified Network.HTTP.Types             as HT
-import qualified Network.Wai                    as WAI
-import           Network.Wai.Logger             (showSockAddr)
-import           UnliftIO                       (MonadIO, liftIO, MonadUnliftIO, timeout, SomeException, try, bracket, concurrently_)
+import           Data.List.NonEmpty                   (NonEmpty (..))
+import qualified Data.List.NonEmpty                   as NE
+import           Data.Maybe                           (fromMaybe, isJust, listToMaybe)
+import           Data.Monoid                          (mappend, mconcat, (<>))
+import           Data.Set                             (Set)
+import qualified Data.Set                             as Set
+import           Data.Streaming.Network               (AppData, readLens)
+import qualified Data.Text                            as T
+import qualified Data.Text.Encoding                   as TE
+import           Data.Word8                           (isSpace, _colon, _cr)
+import           GHC.Generics                         (Generic)
+import           Network.HTTP.Client                  (BodyReader, brRead)
+import qualified Network.HTTP.Client                  as HC
+import qualified Network.HTTP.Types                   as HT
+import qualified Network.HTTP.Types.Header            as H
+import qualified Network.Wai                          as WAI
+import           Network.Wai.Logger                   (showSockAddr)
+import           UnliftIO                             (MonadIO, liftIO, MonadUnliftIO, timeout, SomeException, try, bracket, concurrently_)
 
 -- | Host\/port combination to which we want to proxy.
 data ProxyDest = ProxyDest
@@ -150,11 +149,12 @@ rawTcpProxyTo (ProxyDest host port) appdata = liftIO $
 
 -- | Sends a simple 502 bad gateway error message with the contents of the
 -- exception.
-defaultOnExc :: SomeException -> WAI.Application
-defaultOnExc exc _ sendResponse = sendResponse $ WAI.responseLBS
-    HT.status502
-    [("content-type", "text/plain")]
-    ("Error connecting to gateway:\n\n" <> TLE.encodeUtf8 (TL.pack $ show exc))
+defaultOnExc :: SomeException -> WAI.Request -> (ByteString -> IO ()) -> IO ()
+defaultOnExc exc _req sendBytes = do
+  sendBytes "HTTP/1.1 502 Bad Gateway\r\n"
+  sendBytes "Content-Type: text/plain\r\n"
+  sendBytes "\r\n"
+  sendBytes ("Error connecting to gateway:\n\n" <> (S8.pack $ show exc))
 
 -- | The different responses that could be generated by a @waiProxyTo@ lookup
 -- function.
@@ -205,7 +205,7 @@ data WaiProxyResponse = WPRResponse WAI.Response
 -- bodies, so please confirm that yours does (Warp, Snap, and Happstack, for example, do).
 waiProxyTo :: (WAI.Request -> IO WaiProxyResponse)
            -- ^ How to reverse proxy.
-           -> (SomeException -> WAI.Application)
+           -> (SomeException -> WAI.Request -> (ByteString -> IO ()) -> IO ())
            -- ^ How to handle exceptions when calling remote server. For a
            -- simple 502 error page, use 'defaultOnExc'.
            -> HC.Manager -- ^ connection manager to utilize
@@ -236,7 +236,7 @@ setLpsTimeBound :: Maybe Int -> LocalWaiProxySettings -> LocalWaiProxySettings
 setLpsTimeBound x s = s { lpsTimeBound = x }
 
 data WaiProxySettings = WaiProxySettings
-    { wpsOnExc :: SomeException -> WAI.Application
+    { wpsOnExc :: SomeException -> WAI.Request -> (ByteString -> IO ()) -> IO ()
     , wpsTimeout :: Maybe Int
     , wpsSetIpHeader :: SetIpHeader
     -- ^ Set the X-Real-IP request header with the client's IP address.
@@ -394,48 +394,88 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                       WAI.KnownLength i -> HC.RequestBodyStream (fromIntegral i) scb
                       WAI.ChunkedBody -> HC.RequestBodyStreamChunked scb
 
-            let req' =
+            -- We don't want this to be used, but WAI requires us to provide a default response
+            -- when using WAI.responseRaw. This should be fine because none of the functions like
+            -- 'responseStatus' or 'responseHeaders' should be called on this.
+            let defaultResponse = WAI.responseLBS HT.conflict409 [] mempty
+
+            sendResponse $ flip WAI.responseRaw defaultResponse $ \_ sendToClient -> do
+              let req' =
 #if MIN_VERSION_http_client(0, 5, 0)
-                  HC.defaultRequest
-                    { HC.checkResponse = \_ _ -> return ()
-                    , HC.responseTimeout = maybe HC.responseTimeoutNone HC.responseTimeoutMicro $ lpsTimeBound lps
+                    HC.defaultRequest
+                      { HC.checkResponse = \_ _ -> return ()
+                      , HC.responseTimeout = maybe HC.responseTimeoutNone HC.responseTimeoutMicro $ lpsTimeBound lps
 #else
-                  def
-                    { HC.checkStatus = \_ _ _ -> Nothing
-                    , HC.responseTimeout = lpsTimeBound lps
+                    def
+                      { HC.checkStatus = \_ _ _ -> Nothing
+                      , HC.responseTimeout = lpsTimeBound lps
 #endif
-                    , HC.method = WAI.requestMethod req
-                    , HC.secure = secure
-                    , HC.host = host
-                    , HC.port = port
-                    , HC.path = WAI.rawPathInfo req
-                    , HC.queryString = WAI.rawQueryString req
-                    , HC.requestHeaders = fixReqHeaders wps req
-                    , HC.requestBody = body
-                    , HC.redirectCount = 0
-                    }
-            bracket
-                (try $ do
-                   liftIO $ wpsLogRequest wps' req'
-                   HC.responseOpen req' manager)
-                (either (const $ return ()) HC.responseClose)
-                $ \case
-                    Left e -> wpsOnExc wps e req sendResponse
-                    Right res -> do
-                        let conduit = fromMaybe
-                                        (awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
-                                        (wpsProcessBody wps req $ const () <$> res)
-                            src = bodyReaderSource $ HC.responseBody res
-                            noChunked = HT.httpMajor (WAI.httpVersion req) >= 2 || WAI.requestMethod req == HT.methodHead
-                        sendResponse $ WAI.responseStream
-                            (HC.responseStatus res)
-                            (filter (\(key, v) -> not (key `Set.member` strippedHeaders) ||
-                                                  key == "content-length" && (noChunked || v == "0"))
-                                    (HC.responseHeaders res))
-                            (\sendChunk flush -> runConduit $ src .| conduit .| CL.mapM_ (\mb ->
-                                case mb of
-                                    Flush -> flush
-                                    Chunk b -> sendChunk b))
+                      , HC.method = WAI.requestMethod req
+                      , HC.secure = secure
+                      , HC.host = host
+                      , HC.port = port
+                      , HC.path = WAI.rawPathInfo req
+                      , HC.queryString = WAI.rawQueryString req
+                      , HC.requestHeaders = fixReqHeaders wps req
+                      , HC.requestBody = body
+                      , HC.redirectCount = 0
+#if MIN_VERSION_http_client(0, 7, 16)
+                      , HC.earlyHintHeadersReceived = \headers ->
+                            sendToClient $ L.toStrict $ toLazyByteString $
+                                fromByteString "HTTP/1.1 103 Early Hints\r\n"
+                                <> mconcat [renderHeader h | h <- headers]
+                                <> "\r\n"
+#endif
+                      }
+              bracket
+                  (try $ do
+                     liftIO $ wpsLogRequest wps' req'
+                     HC.responseOpen req' manager
+                  )
+                  (either (const $ return ()) HC.responseClose)
+                  $ \case
+                      Left (e :: SomeException) -> wpsOnExc wps e req sendToClient
+                      Right res -> do
+                          let conduit = fromMaybe
+                                          (awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
+                                          (wpsProcessBody wps req $ const () <$> res)
+                              src = bodyReaderSource $ HC.responseBody res
+                              noChunked = HT.httpMajor (WAI.httpVersion req) >= 2 || WAI.requestMethod req == HT.methodHead
+
+                          let (HT.Status code message) = HC.responseStatus res
+                          sendToClient $ L.toStrict $ toLazyByteString $
+                            fromByteString (S8.pack $ show (HC.responseVersion res)) <> " " <> fromByteString (S8.pack $ show code) <> " " <> fromByteString message <> "\r\n"
+
+                          -- Handle HTTP chunking, just as Warp does for WAI.responseStream
+                          let requestIsChunked = not noChunked
+                          let responseHasLength = isJust (lookup "content-length" (HC.responseHeaders res))
+                          let needsChunked = requestIsChunked && not responseHasLength
+
+                          let headers' = (filter (\(key, v) -> not (key `Set.member` strippedHeaders) ||
+                                                                    key == "content-length" && (noChunked || v == "0"))
+                                         (HC.responseHeaders res))
+                          let headers
+                                | needsChunked = (H.hTransferEncoding, "chunked") : headers'
+                                | otherwise = headers
+                          sendToClient $ L.toStrict $ toLazyByteString $
+                              mconcat [renderHeader h | h <- headers]
+                              <> "\r\n"
+
+                          -- It may look strange that we don't handle 'Flush' here, but 'Flush' is not actually used anywhere
+                          -- except at the end of the stream in the conduit above.
+                          let sendChunk
+                                | needsChunked = sendToClient . toByteString . chunkedTransferEncoding
+                                | otherwise = sendToClient . toByteString
+                          runConduit $ src .| conduit .| CL.mapM_ (\mb ->
+                              case mb of
+                                  Flush -> return ()
+                                  Chunk b -> sendChunk b
+                              )
+                          when needsChunked $ sendToClient (toByteString chunkedTransferTerminator)
+
+  where
+    renderHeader :: HT.Header -> Builder
+    renderHeader (name, value) = fromByteString (CI.original name) <> ": " <> fromByteString value <> "\r\n"
 
 -- | Introduce a minor level of caching to handle some basic
 -- retry cases inside http-client. But to avoid a DoS attack,
