@@ -1,4 +1,8 @@
 
+## 0.6.0.3
+
+* Fix a regression introduced in 0.6.0.2: wrong 'Content-Length' header is preserved for responses with encoded content. [#47](https://github.com/fpco/http-reverse-proxy/pull/47)
+
 ## 0.6.0.2
 
 * Fix docker registry reverse proxying by preserving the 'Content-Length' response header to HTTP/2 and HEAD requests. [#45](https://github.com/fpco/http-reverse-proxy/pull/45)
