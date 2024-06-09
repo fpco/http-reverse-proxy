@@ -54,7 +54,7 @@ import           Data.Functor.Identity          (Identity (..))
 import           Data.IORef
 import           Data.List.NonEmpty             (NonEmpty (..))
 import qualified Data.List.NonEmpty             as NE
-import           Data.Maybe                     (fromMaybe, listToMaybe)
+import           Data.Maybe                     (fromMaybe, isNothing, listToMaybe)
 import           Data.Monoid                    (mappend, mconcat, (<>))
 import           Data.Set                       (Set)
 import qualified Data.Set                       as Set
@@ -426,12 +426,14 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                                         (awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
                                         (wpsProcessBody wps req $ const () <$> res)
                             src = bodyReaderSource $ HC.responseBody res
-                            noChunked = HT.httpMajor (WAI.httpVersion req) >= 2 || WAI.requestMethod req == HT.methodHead
+                            headers = HC.responseHeaders res
+                            notEncoded = isNothing (lookup "content-encoding" headers)
+                            notChunked = HT.httpMajor (WAI.httpVersion req) >= 2 || WAI.requestMethod req == HT.methodHead
                         sendResponse $ WAI.responseStream
                             (HC.responseStatus res)
                             (filter (\(key, v) -> not (key `Set.member` strippedHeaders) ||
-                                                  key == "content-length" && (noChunked || v == "0"))
-                                    (HC.responseHeaders res))
+                                                  key == "content-length" && (notEncoded && notChunked || v == "0"))
+                                    headers)
                             (\sendChunk flush -> runConduit $ src .| conduit .| CL.mapM_ (\mb ->
                                 case mb of
                                     Flush -> flush
