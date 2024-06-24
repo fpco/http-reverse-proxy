@@ -1,4 +1,8 @@
 
+## 0.6.1.0
+
+* Add the `wpsModifyResponseHeaders` option to `WaiProxySettings` to tweak response headers before they are returned upstream. [#48](https://github.com/fpco/http-reverse-proxy/pull/48)
+
 ## 0.6.0.3
 
 * Fix a regression introduced in 0.6.0.2: wrong 'Content-Length' header is preserved for responses with encoded content. [#47](https://github.com/fpco/http-reverse-proxy/pull/47)
