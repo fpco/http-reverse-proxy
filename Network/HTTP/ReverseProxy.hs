@@ -27,6 +27,7 @@ module Network.HTTP.ReverseProxy
     , wpsUpgradeToRaw
     , wpsGetDest
     , wpsLogRequest
+    , wpsModifyResponseHeaders
     , SetIpHeader (..)
       -- *** Local settings
     , LocalWaiProxySettings
@@ -272,6 +273,13 @@ data WaiProxySettings = WaiProxySettings
     -- Default: no op
     --
     -- @since 0.6.0.1
+    , wpsModifyResponseHeaders :: WAI.Request -> HC.Response () -> HT.ResponseHeaders -> HT.ResponseHeaders
+    -- ^ Allow to override the response headers before the response is returned upstream. Useful for example
+    -- to override overly-strict 'Content-Security-Policy' when the source is known to be trustworthy.
+    --
+    -- Default: no op
+    --
+    -- @since 0.6.1.0
     }
 
 -- | How to set the X-Real-IP request header.
@@ -294,6 +302,7 @@ defaultWaiProxySettings = WaiProxySettings
             (CI.mk <$> lookup "upgrade" (WAI.requestHeaders req)) == Just "websocket"
         , wpsGetDest = Nothing
         , wpsLogRequest = const (pure ())
+        , wpsModifyResponseHeaders = \_ _ -> id
         }
 
 renderHeaders :: WAI.Request -> HT.RequestHeaders -> Builder
@@ -422,9 +431,10 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                 $ \case
                     Left e -> wpsOnExc wps e req sendResponse
                     Right res -> do
-                        let conduit = fromMaybe
+                        let res' = const () <$> res
+                            conduit = fromMaybe
                                         (awaitForever (\bs -> yield (Chunk $ fromByteString bs) >> yield Flush))
-                                        (wpsProcessBody wps req $ const () <$> res)
+                                        (wpsProcessBody wps req res')
                             src = bodyReaderSource $ HC.responseBody res
                             headers = HC.responseHeaders res
                             notEncoded = isNothing (lookup "content-encoding" headers)
@@ -433,7 +443,7 @@ waiProxyToSettings getDest wps' manager req0 sendResponse = do
                             (HC.responseStatus res)
                             (filter (\(key, v) -> not (key `Set.member` strippedHeaders) ||
                                                   key == "content-length" && (notEncoded && notChunked || v == "0"))
-                                    headers)
+                                    (wpsModifyResponseHeaders wps req res' headers))
                             (\sendChunk flush -> runConduit $ src .| conduit .| CL.mapM_ (\mb ->
                                 case mb of
                                     Flush -> flush
