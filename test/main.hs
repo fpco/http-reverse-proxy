@@ -211,6 +211,21 @@ main = hspec $
                 withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
                     lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port4
                     lbs `shouldBe` "127.0.0.1"
+        it "doesn't fail on invalid utf8 in x-forwarded-for header" $
+            let getRealIp req = L8.fromStrict $ fromMaybe "" $ lookup "x-real-ip" (requestHeaders req)
+                httpWithForwardedFor url = liftIO $ do
+                  man <- HC.newManager HC.tlsManagerSettings
+                  oreq <- liftIO $ HC.parseUrlThrow url
+                  let req = oreq { HC.requestHeaders = [("X-Forwarded-For", "\xbf\xf0\x9f\x92\xa1"), ("Connection", "close")] }
+                  HC.responseBody <$> HC.httpLbs req man
+                waiProxyTo' getDest onError = waiProxyToSettings getDest defaultWaiProxySettings { wpsOnExc = onError, wpsSetIpHeader = SIHFromHeader }
+             in withMan $ \manager ->
+                withWApp (\r f -> f $ responseLBS status200 [] $ getRealIp r ) $ \port1 ->
+                withWApp (waiProxyTo' (const $ return $ WPRProxyDest $ ProxyDest "127.0.0.1" port1) defaultOnExc manager) $ \port2 ->
+                withCApp (rawProxyTo (const $ return $ Right $ ProxyDest "127.0.0.1" port2)) $ \port3 ->
+                withCApp (rawTcpProxyTo (ProxyDest "127.0.0.1" port3)) $ \port4 -> do
+                    lbs <- httpWithForwardedFor $ "http://127.0.0.1:" ++ show port4
+                    lbs `shouldBe` "\xbf\xf0\x9f\x92\xa1"
         it "performs log action" $
           let ioref :: IO (IORef Int)
               ioref = newIORef 1
