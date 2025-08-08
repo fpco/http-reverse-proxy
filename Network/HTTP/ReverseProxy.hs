@@ -63,7 +63,6 @@ import           Data.Streaming.Network         (AppData, readLens)
 import qualified Data.Text.Lazy                 as TL
 import qualified Data.Text.Lazy.Encoding        as TLE
 import qualified Data.Text                      as T
-import qualified Data.Text.Encoding             as TE
 import           Data.Word8                     (isSpace, _colon, _cr)
 import           GHC.Generics                   (Generic)
 import           Network.HTTP.Client            (BodyReader, brRead)
@@ -362,7 +361,7 @@ fixReqHeaders wps req =
     fromSocket = (("X-Real-IP", S8.pack $ showSockAddr $ WAI.remoteHost req):)
     fromForwardedFor = do
       h <- lookup "x-forwarded-for" (WAI.requestHeaders req)
-      listToMaybe $ map (TE.encodeUtf8 . T.strip) $ T.splitOn "," $ TE.decodeUtf8 h
+      listToMaybe $ map S8.strip $ S8.split ',' h
     addXRealIP =
         case wpsSetIpHeader wps of
             SIHFromSocket -> fromSocket
