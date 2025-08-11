@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ master ]
+
+# Cancel any in-progress run on the same branch/PR when new commits arrive
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cabal:
+    strategy:
+      fail-fast: false
+      matrix:
+        ghc: ['9.8','9.6','9.4','9.2','8.8']
+        # Base set of OSes
+        os: [ubuntu-latest, macos-13, windows-latest]
+        # Also build on Apple Silicon where supported (GHC >= 9.2)
+        include:
+          - os: macos-latest
+            ghc: '9.8'
+          - os: macos-latest
+            ghc: '9.6'
+          - os: macos-latest
+            ghc: '9.4'
+          - os: macos-latest
+            ghc: '9.2'
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Haskell
+        id: setup
+        uses: haskell-actions/setup@v2.8.1
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: latest
+
+      # Cache Cabal store (from setup output) + dist-newstyle, cross-platform
+      - name: Cache Cabal store and dist
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.setup.outputs.cabal-store }}
+            dist-newstyle
+          key: ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-${{ hashFiles('**/*.cabal','**/cabal.project*') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-
+
+      - name: cabal update
+        run: cabal update
+
+      # Ensure solver includes tests/benches in all runs (fixes GHC 8.8 behaviour)
+      - name: Enable tests/benchmarks
+        shell: bash
+        run: |
+          echo "tests: True" >> cabal.project.local
+          echo "benchmarks: True" >> cabal.project.local
+
+      - name: Build (deps)
+        run: cabal build --only-dependencies --enable-tests --enable-benchmarks -j
+
+      - name: Build
+        run: cabal build all --enable-tests --enable-benchmarks -j
+
+      - name: Test
+        run: cabal test all --enable-tests --test-show-details=direct
+
+      - name: Package checks
+        run: cabal check
+
+      - name: Make sdist
+        run: cabal sdist
+
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist-${{ matrix.os }}-ghc-${{ matrix.ghc }}
+          path: dist-newstyle/sdist/*.tar.gz
+          if-no-files-found: error
+
+  # Build the produced sdist in a clean workspace to ensure the release tarball compiles
+  sdist-build:
+    needs: cabal
+    strategy:
+      fail-fast: false
+      matrix:
+        ghc: ['9.8','9.6','9.4','9.2','8.8']
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Haskell
+        id: setup
+        uses: haskell-actions/setup@v2.8.1
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: latest
+
+      - name: Cache Cabal store (read-only for speed)
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-${{ hashFiles('**/*.cabal','**/cabal.project*') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-
+
+      - name: Download sdist (from Linux job)
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist-ubuntu-latest-ghc-${{ matrix.ghc }}
+
+      - name: Build sdist in clean dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls ./*.tar.gz | head -n1)"
+          BASENAME="$(basename "$TARBALL" .tar.gz)"
+          mkdir -p work
+          tar -xzf "$TARBALL" -C work
+          cd "work/$BASENAME"
+          echo "tests: True" >> cabal.project.local
+          echo "benchmarks: True" >> cabal.project.local
+          cabal update
+          cabal build all --enable-tests -j
+          cabal test all --enable-tests --test-show-details=direct
