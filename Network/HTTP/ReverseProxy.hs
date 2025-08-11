@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE TupleSections         #-}
 {-# LANGUAGE CPP                   #-}
+
 module Network.HTTP.ReverseProxy
     ( -- * Types
       ProxyDest (..)
@@ -77,6 +78,23 @@ data ProxyDest = ProxyDest
     { pdHost :: !ByteString
     , pdPort :: !Int
     } deriving (Read, Show, Eq, Ord, Generic)
+
+-- | Trim optional whitespace (OWS) from both ends of a strict 'ByteString'.
+
+-- Per RFC 7230 §3.2.3, OWS = SP / HTAB. This function removes only leading
+-- and trailing space (0x20) and horizontal tab (0x09) bytes. It does not
+-- modify internal whitespace.
+
+-- On newer @bytestring@ versions (those that provide
+-- 'Data.ByteString.Char8.strip') this is a thin wrapper around that
+-- function; on older versions we provide a compatible fallback.
+trimOWS :: S8.ByteString -> S8.ByteString
+#if MIN_VERSION_bytestring(0,12,0)
+trimOWS = S8.strip
+#else
+trimOWS = S8.reverse . S8.dropWhile isOWS . S8.reverse . S8.dropWhile isOWS
+  where isOWS c = c == ' ' || c == '\t'
+#endif
 
 -- | Set up a reverse proxy server, which will have a minimal overhead.
 --
@@ -361,7 +379,7 @@ fixReqHeaders wps req =
     fromSocket = (("X-Real-IP", S8.pack $ showSockAddr $ WAI.remoteHost req):)
     fromForwardedFor = do
       h <- lookup "x-forwarded-for" (WAI.requestHeaders req)
-      listToMaybe $ map S8.strip $ S8.split ',' h
+      listToMaybe $ map trimOWS $ S8.split ',' h
     addXRealIP =
         case wpsSetIpHeader wps of
             SIHFromSocket -> fromSocket
