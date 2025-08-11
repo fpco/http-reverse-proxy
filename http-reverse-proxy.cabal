@@ -71,4 +71,4 @@ test-suite test
 
 source-repository head
   type:     git
-  location: git://github.com/fpco/http-reverse-proxy.git
+  location: https://github.com/fpco/http-reverse-proxy.git
