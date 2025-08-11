@@ -1,3 +1,6 @@
+## 0.6.2.0
+
+# Changes internal handling of the `X-Forwarded-For` header (avoids `Text` round-trips, tolerates invalid UTF-8) [#49](https://github.com/fpco/http-reverse-proxy/pull/49)
 
 ## 0.6.1.0
 
